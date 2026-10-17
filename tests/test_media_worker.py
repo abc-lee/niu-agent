@@ -1616,6 +1616,34 @@ def test_missing_file_mark_failed_stalls_with_distinguishable_reason(tmp_path, m
     assert (st["queue_depth"], st["queue_total"], st["queue_done"]) == (1, 1, 0)
 
 
+def test_non_retryable_mark_failed_pops_preexisting_count(tmp_path, monkeypatch):
+    """⑧ 补钉（审查 P2-2）：不可重试一次处置遇标注失败（``f4_mark_line_done`` 返 "failed"）⇒
+    stalled + 可辨 reason（与弃单失败分支同款之形），**预置旧失败计数被 pop 清除**（marked/missing
+    分支本就如此、failed 分支旧实现漏了）——否则本次一次处置之后，该实体下次真可重试的失败会从旧
+    计数起步、重试预算误判。既有⑧用例只以空态验证 ``_fail_counts == {}``，旧计数残留形态从未被钉
+    （旧实现在此红）。"""
+    q = tmp_path / "queue.md"
+    write_queue(q, [rec("a/stalemark.jpg", "/tmp/fake/stalemark.jpg")])
+    mw._fail_counts["a/stalemark.jpg"] = 2  # 预置旧计数（前一轮可重试失败的残留）
+    monkeypatch.setattr(mw, "f4_mark_line_done", lambda *a, **kw: "failed")
+    monkeypatch.setattr(mw, "_broadcast", lambda e: None)
+    monkeypatch.setattr(mw, "_notify_failure", lambda m: None)
+
+    def boom(p):
+        raise FileNotFoundError(f"文件不存在: {p}")
+
+    env = _make_failure_env(q, boom, monkeypatch)
+    mw.tick(env)
+    mw.tick(env)
+    st = mw.get_state()
+    assert st["status"] == "stalled"
+    assert "文件不存在" in st["reason"] and "标注" in st["reason"]
+    assert mw._fail_counts == {}  # 旧计数被 pop（残留 ⇒ 红）
+    assert mw._inflight is None
+    assert queue_lines(q) == 1  # 行仍未标注，下轮再标注
+    assert (st["queue_depth"], st["queue_total"], st["queue_done"]) == (1, 1, 0)
+
+
 def test_runtime_error_with_file_present_one_shot(tmp_path, monkeypatch):
     """⑨ 对照（2026-10-17 用户定稿）：future 抛**非后端** `RuntimeError`（如白名单外拦截）且文件**存在**
     ⇒ **一次处置**——标完成 + WARNING + ``_fail_counts`` 不写 + 文案含「无需重试」、不含「将自动重试」/

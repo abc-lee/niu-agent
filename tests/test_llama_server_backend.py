@@ -342,3 +342,136 @@ class TestVectorIdleGateAccounting:
             t.join(timeout=10.0)
         assert peak and max(peak) == 2                 # 重叠在途时计数确实到 2
         assert llama_server.text_encode_busy() is False   # 全部结束后归 0
+
+
+class TestPostMediaResponseShape:
+    """``_post_media`` 响应结构解析（审查 P2-1）：200 响应但结构畸形时，必须同样归入
+    ``MediaEncodeBackendError``（唯一可重试类别），不得让裸 AttributeError/KeyError/TypeError
+    穿透到工作者端被误判「非后端」而一次处置——响应结构异常的重试预算本就应当保留。"""
+
+    def test_malformed_response_missing_embedding_key_raises_backend_error(self, monkeypatch):
+        """200 + 畸形 JSON（``{"data": [{}]}``——条目缺 ``embedding`` 键）⇒ ``MediaEncodeBackendError``。
+        旧实现在 ``items[0]["embedding"]`` 处穿透 KeyError（红）。"""
+        monkeypatch.setattr(llama_server, "_base_url", lambda: "http://127.0.0.1:19878")
+
+        class _Resp:
+            """与 ``urlopen`` 返回值同形的假响应（上下文管理器 + ``read()``）。"""
+
+            def __init__(self, body: bytes):
+                self._body = body
+
+            def read(self):
+                return self._body
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        monkeypatch.setattr(llama_server.urllib.request, "urlopen",
+                            lambda req, timeout=None: _Resp(b'{"data": [{}]}'))
+        with pytest.raises(llama_server.MediaEncodeBackendError, match="响应结构异常"):
+            llama_server._post_media("data:image/jpeg;base64,AAAA")
+
+    def test_malformed_response_data_not_dict_raises_backend_error(self, monkeypatch):
+        """200 + 畸形 JSON（顶层 ``data`` 不是 dict ⇒ ``.get`` 穿透 AttributeError）⇒
+        同样归入后端故障类别（红）。"""
+        monkeypatch.setattr(llama_server, "_base_url", lambda: "http://127.0.0.1:19878")
+
+        class _Resp:
+            def __init__(self, body: bytes):
+                self._body = body
+
+            def read(self):
+                return self._body
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        monkeypatch.setattr(llama_server.urllib.request, "urlopen",
+                            lambda req, timeout=None: _Resp(b'{"data": {"embedding": [1.0]}}'))
+        # ``data.get("data")`` 是 dict（truthy）⇒ 直接当 items；单键 ⇒ len == 1 ⇒
+        # 走 ``items[0]`` ⇒ dict 整数字典键 KeyError ⇒ 后端类别。
+        with pytest.raises(llama_server.MediaEncodeBackendError):
+            llama_server._post_media("data:image/jpeg;base64,AAAA")
+
+    def test_malformed_response_non_numeric_embedding_raises_backend_error(self, monkeypatch):
+        """200 + ``embedding`` 含不可转 float 的值（``"nan-string"``）⇒ ``MediaEncodeBackendError``。
+        旧实现 ``list(map(float, ...))`` 穿透裸 ValueError（红）⇒ 工作者误判「非后端」而一次处置，
+        吃掉本可用于响应结构异常的重试预算。"""
+        monkeypatch.setattr(llama_server, "_base_url", lambda: "http://127.0.0.1:19878")
+
+        class _Resp:
+            def __init__(self, body: bytes):
+                self._body = body
+
+            def read(self):
+                return self._body
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        monkeypatch.setattr(llama_server.urllib.request, "urlopen",
+                            lambda req, timeout=None: _Resp(b'{"data": [{"embedding": ["nan-string", 0.1]}]}'))
+        with pytest.raises(llama_server.MediaEncodeBackendError, match="响应结构异常"):
+            llama_server._post_media("data:image/jpeg;base64,AAAA")
+
+    def test_read_connection_reset_raises_backend_error(self, monkeypatch):
+        """传输中断：``resp.read()`` 抛 ``OSError``（如 ``ConnectionResetError``；
+        ``http.client.IncompleteRead`` 亦是其子类）⇒ 同归后端故障类别（唯一可重试）。
+        旧 except 元组只有 ``HTTPError/URLError/TimeoutError/JSONDecodeError``，裸
+        ``OSError`` 穿透 ⇒ 工作者误判「非后端」而一次处置，吃掉重试预算。"""
+        monkeypatch.setattr(llama_server, "_base_url", lambda: "http://127.0.0.1:19878")
+
+        class _Resp:
+            def __init__(self):
+                pass
+
+            def read(self):
+                raise OSError("connection reset")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        monkeypatch.setattr(llama_server.urllib.request, "urlopen",
+                            lambda req, timeout=None: _Resp())
+        with pytest.raises(llama_server.MediaEncodeBackendError,
+                          match="媒体编码失败.*OSError"):
+            llama_server._post_media("data:image/jpeg;base64,AAAA")
+
+    def test_read_non_utf8_bytes_raises_backend_error(self, monkeypatch):
+        """``read()`` 返回非 UTF-8 且无受认 BOM 的字节（``b'\\x80\\x81'``——无 BOM 时
+        ``json.loads`` 走严格 UTF-8 解码）⇒ ``UnicodeDecodeError``（``ValueError`` 子类，
+        **不是** ``JSONDecodeError``）⇒ 旧 except 元组漏接、裸穿透；现归后端故障类别。
+        注：任务示例 ``b'\\xff\\xfe'`` 会被 ``detect_encoding`` 识为 UTF-16 BOM，实际抛
+        ``JSONDecodeError``（旧元组已覆盖），钉不住本路径，故用裸非法字节。"""
+        monkeypatch.setattr(llama_server, "_base_url", lambda: "http://127.0.0.1:19878")
+
+        class _Resp:
+            def __init__(self, body: bytes):
+                self._body = body
+
+            def read(self):
+                return self._body
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        monkeypatch.setattr(llama_server.urllib.request, "urlopen",
+                            lambda req, timeout=None: _Resp(b'\x80\x81'))
+        with pytest.raises(llama_server.MediaEncodeBackendError,
+                          match="媒体编码失败.*UnicodeDecodeError"):
+            llama_server._post_media("data:image/jpeg;base64,AAAA")

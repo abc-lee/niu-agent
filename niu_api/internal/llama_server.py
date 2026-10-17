@@ -16,6 +16,7 @@ from __future__ import annotations
 import atexit
 import base64
 import collections
+import http.client
 import json
 import mimetypes
 import re
@@ -463,9 +464,9 @@ def _post_media(data_uri: str) -> list[float]:
     `{"input": [data_uri]}` 500（≈91 万 token 超物理批）；本形状 200/768 维/1.5 s；
     少一层 content（`{"input": [{"type": "image_url", ...}]}`）被服务端 400 拒。
 
-    故障归类：发送段错误（HTTP / 连接 / 超时 / JSON 解析）与响应结构异常（条数不符）
-    一律包一层抛 ``MediaEncodeBackendError``（**唯一可重试的失败类别**）；未就绪在
-    encode 入口判定，同样抛它。
+    故障归类：发送段错误（HTTP / 连接 / 超时 / JSON 与响应字节解码 / 传输中断）与响应结构异常（条数不符 / 畸形结构：
+    ``data`` 非 dict、条目缺 ``embedding`` 键、类型不符）一律包一层抛 ``MediaEncodeBackendError``
+    （**唯一可重试的失败类别**）；未就绪在 encode 入口判定，同样抛它。
     """
     payload = json.dumps(
         {
@@ -484,15 +485,24 @@ def _post_media(data_uri: str) -> list[float]:
         with urllib.request.urlopen(req, timeout=llama_config.media_http_timeout()) as resp:
             data = json.loads(resp.read())
     except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError,
-            json.JSONDecodeError) as err:
-        # 媒体编码后端故障（HTTP / 连接 / 超时 / 响应解析）——唯一可重试的失败类别：
+            json.JSONDecodeError, http.client.HTTPException, OSError,
+            UnicodeDecodeError) as err:
+        # 媒体编码后端故障（HTTP / 连接 / 超时 / 响应解析与字节解码 / 传输中断）——唯一可重试的失败类别：
         # 保留原始错误信息、包一层抛（工作者端据此区分「1/3 重试→弃单」与「一次处置」）。
         raise MediaEncodeBackendError(f"llama-server 媒体编码失败（{type(err).__name__}）: {err}") from err
-    items = data.get("data") or []
-    if len(items) != 1:
-        # 响应结构异常（后端故障类别）：条数不符照抛，同样包一层。
-        raise MediaEncodeBackendError(f"llama-server 返回条数不符：期望 1，实得 {len(items)}")
-    return list(map(float, items[0]["embedding"]))
+    try:
+        items = data.get("data") or []
+        if len(items) != 1:
+            # 响应结构异常（后端故障类别）：条数不符照抛，同样包一层。
+            raise MediaEncodeBackendError(f"llama-server 返回条数不符：期望 1，实得 {len(items)}")
+        return list(map(float, items[0]["embedding"]))
+    except (AttributeError, KeyError, TypeError, IndexError,
+            ValueError, OverflowError) as err:
+        # 畸形响应（``data`` 非 dict ⇒ AttributeError；条目缺 embedding 键 ⇒ KeyError；
+        # 类型不符 ⇒ TypeError/IndexError；embedding 含不可转 float 的值 ⇒ ValueError/OverflowError）
+        # 同属后端故障类别：不穿透成裸异常，否则工作者会误判「非后端」而一次处置，
+        # 吃掉本可用于响应结构异常的重试预算。
+        raise MediaEncodeBackendError(f"llama-server 响应结构异常: {type(err).__name__}: {err}") from err
 
 
 def encode_media(abs_path: str) -> list[float]:
