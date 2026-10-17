@@ -44,6 +44,16 @@ from niu_api.internal.media_artifacts import (
 )
 from niu_api.internal.media_ingest_config import media_ingest_enabled
 
+# ── 媒体编码后端故障类别（2026-10-17 用户定稿：只有它可重试）─────────────
+
+
+class MediaEncodeBackendError(RuntimeError):
+    """媒体编码后端（llama-server）故障——唯一可重试的失败类别。
+
+    未就绪 / HTTP 错误 / 连接失败 / 超时 / 响应结构异常都归此类；
+    mmproj 未加载等**需用户动作才能恢复**的配置问题不归此类（一次处置）。
+    """
+
 # ── S7-T2：单条输入 token 上限 + 超限护栏参数 ───────────────────────────
 # 上限 = 生效行里的 `-c`（llama_config.embed_token_limit()，缺省 8192 零漂移）：
 # llama-server 单条输入的 token 上限随用户那一行的 -c/-b/-ub 走，程序不再自留常量。
@@ -452,6 +462,10 @@ def _post_media(data_uri: str) -> list[float]:
     gemma2-sandbox mm_test.py 的 img_emb() 同型）。2026-10-13 真机实测：旧形状
     `{"input": [data_uri]}` 500（≈91 万 token 超物理批）；本形状 200/768 维/1.5 s；
     少一层 content（`{"input": [{"type": "image_url", ...}]}`）被服务端 400 拒。
+
+    故障归类：发送段错误（HTTP / 连接 / 超时 / JSON 解析）与响应结构异常（条数不符）
+    一律包一层抛 ``MediaEncodeBackendError``（**唯一可重试的失败类别**）；未就绪在
+    encode 入口判定，同样抛它。
     """
     payload = json.dumps(
         {
@@ -466,11 +480,18 @@ def _post_media(data_uri: str) -> list[float]:
         data=payload,
         headers={"Content-Type": "application/json"},
     )
-    with urllib.request.urlopen(req, timeout=llama_config.media_http_timeout()) as resp:
-        data = json.loads(resp.read())
+    try:
+        with urllib.request.urlopen(req, timeout=llama_config.media_http_timeout()) as resp:
+            data = json.loads(resp.read())
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError,
+            json.JSONDecodeError) as err:
+        # 媒体编码后端故障（HTTP / 连接 / 超时 / 响应解析）——唯一可重试的失败类别：
+        # 保留原始错误信息、包一层抛（工作者端据此区分「1/3 重试→弃单」与「一次处置」）。
+        raise MediaEncodeBackendError(f"llama-server 媒体编码失败（{type(err).__name__}）: {err}") from err
     items = data.get("data") or []
     if len(items) != 1:
-        raise RuntimeError(f"llama-server 返回条数不符：期望 1，实得 {len(items)}")
+        # 响应结构异常（后端故障类别）：条数不符照抛，同样包一层。
+        raise MediaEncodeBackendError(f"llama-server 返回条数不符：期望 1，实得 {len(items)}")
     return list(map(float, items[0]["embedding"]))
 
 
@@ -486,7 +507,7 @@ def encode_media(abs_path: str) -> list[float]:
     编码期间文本编码排队并可能超时 —— 该二阶伤害在手册披露，本锁是既有串行约定。
     """
     if not _health_ok():
-        raise RuntimeError("llama-server 未就绪（health 检查失败）")
+        raise MediaEncodeBackendError("llama-server 未就绪（health 检查失败）")
     # 本守卫只查旗标、**不查开关**（调用方只在需要媒体时才会调用本函数），
     # 措辞因此不得宣称"开关已开"——开关状态与本守卫无关。
     if _mmproj_loaded is None:
@@ -514,7 +535,7 @@ def encode_media_bytes(data: bytes, mime: str = "image/jpeg") -> list[float]:
     发送缩放后的 JPEG；前置检查与 `encode_media` 同型（健康 + mmproj 旗标，先于任何
     发送），发送同走 `_encode_lock` 串行 + `_post_media` 的三层嵌套形态。"""
     if not _health_ok():
-        raise RuntimeError("llama-server 未就绪（health 检查失败）")
+        raise MediaEncodeBackendError("llama-server 未就绪（health 检查失败）")
     if _mmproj_loaded is None:
         raise RuntimeError(
             "当前 llama-server 实例未声明多模态（行内既无 --mmproj 也无 --no-mmproj），"

@@ -146,7 +146,10 @@ def downscale_to_long_side(path: str, long_side: int) -> bytes:
 def _try_downscale_and_send(path: str) -> list[float] | None:
     """缩放（或 HEIC 转码）并发送；成功 ⇒ 返回向量；缩放/转码/发送段异常 ⇒ WARNING + 返回 None
     （**调用方按分支决定后续**：内置格式分支降级为原图直送，I-7；HEIC 分支抛可辨失败——服务端
-    不解 HEIC，原图直送必败，不降级）。发送走 `encode_media_bytes`（内存字节 → data: URI）。"""
+    不解 HEIC，原图直送必败，不降级）。发送段后端故障（`llama_server.MediaEncodeBackendError`：
+    未就绪 / HTTP / 连接 / 超时 / 响应结构异常）**原样 re-raise**——它是唯一可重试的失败类别，
+    吞成「缩放失败」会降级原图直送（同一后端必再失败）或把 HEIC 分支误判成确定性一次处置。
+    其余异常（Pillow 解码失败等）⇒ WARNING + 返回 None。发送走 `encode_media_bytes`（内存字节 → data: URI）。"""
     from niu_api.internal import llama_server
     from niu_api.internal.media_ingest_config import media_ingest_downscale_long_side
 
@@ -155,6 +158,9 @@ def _try_downscale_and_send(path: str) -> list[float] | None:
         data = downscale_to_long_side(path, long_side)
         logger.info(f"[MediaDownscale] 内存缩放/转码后发送（长边 {long_side}）: {path}")
         return llama_server.encode_media_bytes(data, "image/jpeg")
+    except llama_server.MediaEncodeBackendError:
+        # 后端故障原样上抛：不被吞成「缩放失败」（见 docstring）——调用方分支与工作者重试预算都靠这个类别区分。
+        raise
     except Exception as e:  # noqa: BLE001 —— 失败后续见 docstring（内置降级 / HEIC 抛可辨失败）
         logger.warning(f"[MediaDownscale] 缩放/转码失败: {path}: {type(e).__name__}: {e}")
         return None
@@ -210,7 +216,7 @@ def encode_media_any(path: str) -> list[float]:
             "核对 pillow-heif 安装"
         )
     elif action == "downscale":
-        # 内置白名单超门槛 ⇒ 缩放（I-2）；缩放失败 ⇒ I-7：降级原图直送
+        # 内置白名单超门槛 ⇒ 缩放（I-2）；缩放失败 ⇒ I-7：降级原图直送（后端异常不降级，原样上抛）
         vector = _try_downscale_and_send(path)
         if vector is not None:
             return vector

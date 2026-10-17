@@ -265,10 +265,13 @@ def _converge_inflight(env: TickEnv) -> None:
     except Exception as e:
         # F-4/D-1 复合判据（文件缺失形态）：显式 FileNotFoundError，或收敛时文件已不在（TOCTOU：
         # 入口判过存在、编码时文件被删 ⇒ 抛的是 RuntimeError("图片文件不存在") 而非 FileNotFoundError）
-        # ⇒ 均**不可重试**（missing=True ⇒ retryable=False）。文件存在且异常非 FileNotFoundError ⇒
-        # 不改判：「存在但真失败」仍走既有 1/3→弃单（R-2）。
+        # ⇒ 判「文件已不在」（missing，仅供文案区分）。2026-10-17 用户定稿：可重试的失败类别
+        # **只有**媒体编码后端（llama-server）故障——`MediaEncodeBackendError` 且文件仍在（missing 仍优先判一次性：
+        # 文件都没了，重试也只会再失败）；其余异常（白名单外 / 护栏拒收等非后端 RuntimeError、
+        # 其他异常）⇒ 一次处置（标完成 + WARNING + 不写重试计数）。
         missing = isinstance(e, FileNotFoundError) or not os.path.exists(inflight.file_path)
-        _record_failure(inflight, f"处理失败（{type(e).__name__}）: {e}", env, retryable=not missing)
+        retryable = isinstance(e, llama_server.MediaEncodeBackendError) and not missing
+        _record_failure(inflight, f"处理失败（{type(e).__name__}）: {e}", env, retryable=retryable)
         return
     # 成功：向量已写库（同键覆盖），现在标注完成（先成功后标注，I-5）；标注缺失形态按页面删文件收敛
     k = f4_mark_line_done(inflight.line_index, queue_path=env.queue_path,
@@ -297,11 +300,13 @@ def _converge_inflight(env: TickEnv) -> None:
 
 
 def _record_failure(inflight: _Inflight, reason: str, env: TickEnv, retryable: bool = True) -> None:
-    """在途记录失败。``retryable=False``（F-4/D-1：文件已不存在——显式 ``FileNotFoundError`` 或
-    收敛时复合判据判出文件已不在，含 TOCTOU）⇒ **不可重试**：标注完成（行保留）+ 清旧失败计数
-    （如有）+ 如实临时提示（含「文件不存在」「无需重试」，**不含**「将自动重试」「连续 n 次失败」）
-    + **WARNING** 日志，全程**不写** ``_fail_counts``（不占重试预算）；标注返 "failed" ⇒ 发布
-    stalled + 可辨 reason（仅与弃单失败分支同款之形、不写计数，下轮重新取件再标注）。
+    """在途记录失败。``retryable=False``（F-4/D-1 复合判据判出文件已不在——显式 ``FileNotFoundError``
+    或收敛时文件已不在，含 TOCTOU；2026-10-17 起另含**非后端**异常——可重试类别只有
+    ``MediaEncodeBackendError``，其余一律一次处置）⇒ **不可重试**：标注完成（行保留）+ 清旧失败计数
+    （如有）+ 如实临时提示（**不含**「将自动重试」「连续 n 次失败」；文件确实不在时文案含「文件不存在」，
+    否则为通用「跳过媒体向量（无需重试）」）+ **WARNING** 日志，全程**不写** ``_fail_counts``
+    （不占重试预算）；标注返 "failed" ⇒ 发布 stalled + 可辨 reason（仅与弃单失败分支同款之形、不写计数，
+    下轮重新取件再标注）。
     缺省 ``retryable=True`` ⇒ 既有路径：未达上限 ⇒ 行保持未完成、下轮重试（计数 +1，原因可辨，
     I-6：重试期百分比不动 = 如实反映，横条按 stalled + 原因渲染）；达上限 ⇒ 弃单 = **标完成** +
     醒目 ERROR + SSE 失败事件 + 临时提示（口径乙：弃单也算「过了」，失败信息只作临时提示、不留在
@@ -311,8 +316,9 @@ def _record_failure(inflight: _Inflight, reason: str, env: TickEnv, retryable: b
     global _inflight
     _inflight = None
     if not retryable:
-        # F-4：照片文件已不存在（入库后被删除）⇒ 不重试。标完成（行保留）、清旧计数，
-        # 全程不写 _fail_counts（重试预算留给真可重试的失败）；提示文案如实。
+        # 一次处置（retryable=False）：标完成（行保留）、清旧计数，全程不写 _fail_counts
+        # （重试预算只留给真可重试的后端故障）；文案按文件是否仍在缺失区分两种措辞。
+        file_gone = not os.path.exists(inflight.file_path)
         try:
             k = f4_mark_line_done(inflight.line_index, queue_path=env.queue_path,
                                   expect=(inflight.entity_name, inflight.file_path))
@@ -321,16 +327,26 @@ def _record_failure(inflight: _Inflight, reason: str, env: TickEnv, retryable: b
             k = "failed"
         if k in ("marked", "missing"):
             _fail_counts.pop(inflight.entity_name, None)
-            logger.warning(f"[MediaWorker] 文件不存在（可能入库后被删除）：标完成、跳过媒体向量，无需重试: {inflight.entity_name}: {reason}")
-            _broadcast({"type": "media-ingest-completed", "entity": inflight.entity_name, "ok": False, "message": f"文件不存在，跳过媒体向量（无需重试）: {reason}"})
-            _notify_failure(f"照片文件不存在（入库后被删除），跳过媒体向量，无需重试：{inflight.entity_name}（{reason}）")
+            if file_gone:
+                logger.warning(f"[MediaWorker] 文件不存在（可能入库后被删除）：标完成、跳过媒体向量，无需重试: {inflight.entity_name}: {reason}")
+                _broadcast({"type": "media-ingest-completed", "entity": inflight.entity_name, "ok": False, "message": f"文件不存在，跳过媒体向量（无需重试）: {reason}"})
+                _notify_failure(f"照片文件不存在（入库后被删除），跳过媒体向量，无需重试：{inflight.entity_name}（{reason}）")
+            else:
+                logger.warning(f"[MediaWorker] 跳过媒体向量（无需重试）: {inflight.entity_name}: {reason}")
+                _broadcast({"type": "media-ingest-completed", "entity": inflight.entity_name, "ok": False, "message": f"跳过媒体向量（无需重试）: {reason}"})
+                _notify_failure(f"跳过媒体向量（无需重试）：{inflight.entity_name}（{reason}）")
             _set_state(status="idle", reason="", entity=None, started_at=None, **_counts(env.queue_path))
         else:
             # 标注失败（行仍未标注）：仅发布 stalled + 可辨 reason（与弃单失败分支同款之形，
-            # 不写 _fail_counts 计数）——下轮重新取件、再判不存在、再标注（文件仍在缺失 ⇒ 仍走本分支）。
-            logger.warning(f"[MediaWorker] 文件不存在但行标注完成失败（下轮再标注）: {inflight.entity_name}: {reason}")
-            _broadcast({"type": "media-ingest-completed", "entity": inflight.entity_name, "ok": False, "message": f"文件不存在，跳过媒体向量（行标注失败，下轮再标注）: {reason}"})
-            _set_state(status="stalled", reason=f"文件不存在（入库后被删除），行标注完成失败（下轮重新取件再标注）：{reason}", entity=inflight.entity_name, started_at=None, **_counts(env.queue_path))
+            # 不写 _fail_counts 计数）——下轮重新取件、再处置、再标注（文件仍缺失 ⇒ 仍走本分支）。
+            if file_gone:
+                logger.warning(f"[MediaWorker] 文件不存在但行标注完成失败（下轮再标注）: {inflight.entity_name}: {reason}")
+                _broadcast({"type": "media-ingest-completed", "entity": inflight.entity_name, "ok": False, "message": f"文件不存在，跳过媒体向量（行标注失败，下轮再标注）: {reason}"})
+                _set_state(status="stalled", reason=f"文件不存在（入库后被删除），行标注完成失败（下轮重新取件再标注）：{reason}", entity=inflight.entity_name, started_at=None, **_counts(env.queue_path))
+            else:
+                logger.warning(f"[MediaWorker] 行标注完成失败（下轮重新取件再标注）: {inflight.entity_name}: {reason}")
+                _broadcast({"type": "media-ingest-completed", "entity": inflight.entity_name, "ok": False, "message": f"跳过媒体向量（行标注失败，下轮再标注）: {reason}"})
+                _set_state(status="stalled", reason=f"跳过媒体向量（无需重试），行标注完成失败（下轮重新取件再标注）：{reason}", entity=inflight.entity_name, started_at=None, **_counts(env.queue_path))
         return
     n = _fail_counts.get(inflight.entity_name, 0) + 1
     if n >= MAX_CONSECUTIVE_FAILURES:

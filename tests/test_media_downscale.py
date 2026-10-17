@@ -277,6 +277,24 @@ def test_heic_transcode_failure_raises_without_sending(tmp_path, _patch_encoders
     assert not _patch_encoders["path"] and not _patch_encoders["bytes"]  # 从未向编码器发过任何请求
 
 
+def test_backend_error_re_raises_without_downgrade(tmp_path, _patch_encoders, monkeypatch):
+    """2026-10-17 用户定稿：发送段后端故障（`MediaEncodeBackendError`：未就绪 / HTTP / 连接 /
+    超时 / 响应结构异常）——唯一可重试的失败类别——必须被 `_try_downscale_and_send` **原样
+    re-raise**：不得吞成「缩放失败」而降级原图直送（同一后端直送必再失败、白烧重试预算），
+    也不得被误判为确定性一次处置。构造法：缩放段真跑成功（Pillow 真缩放、不打桩），发送入口
+    打桩抛后端异常 ⇒ `encode_media_any` 原样上抛，直送入口零调用。"""
+
+    def boom_bytes(data, mime="image/jpeg"):
+        raise llama_server.MediaEncodeBackendError("llama-server 未就绪（health 检查失败）")
+
+    monkeypatch.setattr(llama_server, "encode_media_bytes", boom_bytes)  # 覆盖夹具桩：发送段抛后端异常
+    p = _make_image(tmp_path / "big.jpg", 4000, 3000)  # 12MP > 8MP 门槛 ⇒ 真进缩放分支
+    with pytest.raises(llama_server.MediaEncodeBackendError):
+        media_downscale.encode_media_any(p)
+    assert not _patch_encoders["path"]  # 未降级原图直送（直送入口从未到达）
+    assert _patch_encoders["bytes"] == []  # 发送从未成功（夹具桩被覆盖，零记录）
+
+
 def struct_pack_ih(w, h):
     import struct
 
