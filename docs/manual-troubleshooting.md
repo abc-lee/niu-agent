@@ -519,7 +519,7 @@ rm ~/.niu/lightrag_storage/vdb_chunks.json
 # 重启程序，splash 显示损坏提示，点"尝试修复"，索引从知识图谱自动重建
 # 绝不要删 graph_chunk_entity_relation.graphml、kv_store_full_docs.json、
 # kv_store_llm_response_cache.json —— 那是 3 个真相源，删了不可再生
-# （见 9.1 真相源与派生文件；换模型迁移场景见 README「从 0.4.x 升级（必做）」）
+# （见 9.1 真相源与派生文件；换模型迁移场景见 docs/upgrade-0.4-to-0.5.md）
 ```
 
 #### 问题：文档入库失败（格式不支持）
@@ -699,7 +699,7 @@ typeof NiuDomTree !== 'undefined'
 | 脑区同步失败 | region_sync 数据源异常 | 查看 API 日志中 `region_sync` 相关错误；检查 `config/mcp-servers.yaml` 中 brain-region-server 配置 ；bundle 配置为只读权威层，自定义/覆盖检查 ~/.niu/config/mcp-servers-user.yaml（双目录 deep merge） |
 | 脑区查询返回 UNKNOWN source_id | 数据源标识缺失 | 检查 region_sync 注入时是否正确设置 source_id 参数 |
 | 脑区边被意外删除 | 衰减算法配置错误 | 检查 preferences.json 中脑区 priority 是否为新值（permanent/long/medium/short），旧值 core/category 会回退到 medium |
-| 知识图谱回答准确度下降/搜索匹配度降低（回答变模糊、答非所问、漏关键信息；搜相关话题搜不到、搜出无关内容）；极端场景才见"查询失败"报错 | vdb 文件内部不一致（matrix/data 行数不匹配、孤儿向量）；或从 0.4.x 升级后没删 3 个 vdb | **若是刚升级上来的，优先按 README「从 0.4.x 升级（必做）」删 3 个 vdb_*.json 后重启走修复重建**（新旧向量混在同一索引里没有任何提示，只会让检索变差）；否则**直接重启程序即可自动修复**（启动自检自动重建 matrix，无需删文件）；若重启后仍异常，删 3 个 vdb 文件重启，splash 弹窗后点"尝试修复"触发完整重建（见 1.7.1 简易指引） |
+| 知识图谱回答准确度下降/搜索匹配度降低（回答变模糊、答非所问、漏关键信息；搜相关话题搜不到、搜出无关内容）；极端场景才见"查询失败"报错 | vdb 文件内部不一致（matrix/data 行数不匹配、孤儿向量）；或从 0.4.x 升级后没删 3 个 vdb | **若是刚升级上来的，优先按 `docs/upgrade-0.4-to-0.5.md` 删 3 个 vdb_*.json 后重启走修复重建**（新旧向量混在同一索引里没有任何提示，只会让检索变差）；否则**直接重启程序即可自动修复**（启动自检自动重建 matrix，无需删文件）；若重启后仍异常，删 3 个 vdb 文件重启，splash 弹窗后点"尝试修复"触发完整重建（见 1.7.1 简易指引） |
 | 更换模型/服务商后推理深度或思考链参数不生效（`reasoning_effort`/`thinking` 配置后无效果、报 400、或"测试通过"但请求体没带参数） | 参数未送达（顶层通道被 litellm 白名单静默丢弃，假 200）/ 取值超出该模型支持范围 / 旧能力档案不适用新模型 | ① 检查 `logs/raw_http/{YYYYMMDD}/` 请求体是否含 `extra_body.reasoning_effort` / `extra_body.thinking`（**顶层参数会被 drop_params 静默丢弃**，参数必须走 extra_body 通道）② 设置窗口"探测能力"按钮重新探测（换模型/换服务商后旧档案不适用），下拉只选档案支持的档位 ③ 详见下方 1.7.2 |
 
 #### 1.7.1 知识图谱损坏修复故障排查

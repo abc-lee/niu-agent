@@ -367,7 +367,7 @@ ls -lh ~/.niu/lightrag_storage/kv_store_*.json
 重建 = 只删 3 个向量索引文件（`vdb_*.json`），重启后由修复流程从知识图谱真相源自动重建。
 **绝不删 `~/.niu/lightrag_storage/` 整个目录** —— 那会连同 3 个真相源
 （`graph_chunk_entity_relation.graphml`、`kv_store_full_docs.json`、`kv_store_llm_response_cache.json`）
-一起毁掉，不可再生。步骤与 README「从 0.4.x 升级（必做）」一致：
+一起毁掉，不可再生。步骤与 `docs/upgrade-0.4-to-0.5.md` 一致：
 
 ```bash
 # 1. 只删 3 个向量索引文件（vdb_*.json 是从 GraphML 派生的数据，删除不丢原始内容）
@@ -489,7 +489,7 @@ LightRAG 官方明确建议不要使用带思考链的模型做入库。
 当前只有这一个模型（llama.cpp 后端）。更换向量模型后必须重建向量索引，做法与 8.2 相同：
 只删 3 个 `vdb_*.json` 后重启，走「尝试修复」从知识图谱重建——**不要**删
 `~/.niu/lightrag_storage/` 整个目录（会毁掉 3 个真相源）。从 0.4.x（bge 模型）升级上来的
-完整迁移步骤见 README「从 0.4.x 升级（必做）」。
+完整迁移步骤见 `docs/upgrade-0.4-to-0.5.md`。
 
 ## 九、知识图谱损坏检测与自愈修复
 
