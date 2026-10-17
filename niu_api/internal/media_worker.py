@@ -339,6 +339,9 @@ def _record_failure(inflight: _Inflight, reason: str, env: TickEnv, retryable: b
         else:
             # 标注失败（行仍未标注）：仅发布 stalled + 可辨 reason（与弃单失败分支同款之形，
             # 不写 _fail_counts 计数）——下轮重新取件、再处置、再标注（文件仍缺失 ⇒ 仍走本分支）。
+            # 清旧失败计数（如有）：残留的旧计数会让该实体下次真可重试的失败从旧值起步、
+            # 重试预算误判（与上面 marked/missing 分支同语义，审查 P2-2）。
+            _fail_counts.pop(inflight.entity_name, None)
             if file_gone:
                 logger.warning(f"[MediaWorker] 文件不存在但行标注完成失败（下轮再标注）: {inflight.entity_name}: {reason}")
                 _broadcast({"type": "media-ingest-completed", "entity": inflight.entity_name, "ok": False, "message": f"文件不存在，跳过媒体向量（行标注失败，下轮再标注）: {reason}"})
