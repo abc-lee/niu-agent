@@ -47,7 +47,8 @@ queue_done，防漏字段：I-8）。撕裂尾行（文件尾无换行、写了�
    标注恰一次、状态回 idle + 三计数如实、文案含「文件不存在」「无需重试」且**不含**「将自动重试」/
    「连续 n 次失败」，日志 WARNING 非 ERROR）；TOCTOU（encoder 抛 RuntimeError 但收敛时文件已不在
    ⇒ 仍不重试，复合判据钉死）；预置旧计数被 pop；标注返 "failed" ⇒ stalled + 可辨 reason（不冻结在
-   encoding、计数仍不写）；对照：RuntimeError 且文件**存在** ⇒ 仍走既有 1/3（不回归）。
+   encoding、计数仍不写）；对照：**非后端** RuntimeError 且文件存在 ⇒ 同样一次处置（可重试类别仅
+   ``MediaEncodeBackendError``，走 1/3→弃单）。
 """
 import json
 import time
@@ -342,7 +343,7 @@ def test_fail_counts_retry_then_drop_marks_done(tmp_path, monkeypatch):
     """口径乙：连败 3 次 ⇒ 弃单 = **标完成** + 醒目 ERROR + SSE 失败事件 + 临时提示被调；行带 done
     留在文件里、计数清零、状态回 idle（失败不卡进度，完成比能走到 100%）。重试进行中（n<3）的行
     保持未完成、不标注（百分比不动 = 如实反映）。文件用**真实存在的 tmp 文件**：F-4 复合判据下
-    「异常 + 文件已不在」改判不可重试，本用例钉的是「异常 + 文件存在 ⇒ 仍重试」的既有口径。"""
+    「异常 + 文件已不在」改判不可重试，本用例钉的是「后端异常（``MediaEncodeBackendError``）+ 文件存在 ⇒ 仍重试」（2026-10-17 定稿）。"""
     q = tmp_path / "queue.md"
     broken = tmp_path / "broken.jpg"
     broken.write_bytes(b"\xff\xd8\x00garbage")  # 真实存在的文件（F-4 复合判据：exists 为真 ⇒ 不改判）
@@ -353,7 +354,7 @@ def test_fail_counts_retry_then_drop_marks_done(tmp_path, monkeypatch):
     monkeypatch.setattr(mw, "_notify_failure", notices.append)
 
     def boom_store_add(e, m, v):
-        raise RuntimeError("媒体库写入失败")
+        raise mw.llama_server.MediaEncodeBackendError("媒体库写入失败")
 
     def submit(fn):
         f = FakeFuture()
@@ -397,7 +398,7 @@ def test_fail_counts_retry_then_drop_marks_done(tmp_path, monkeypatch):
 def test_drop_mark_failure_keeps_count_and_stalls(tmp_path, monkeypatch):
     """弃单时标注失败（返 "failed"）：保留失败计数 + 报 stalled（下轮重新编码并再次弃单）——防「标注
     失败但计数被清零 ⇒ 再凑 3 次失败 ⇒ 再弃单又没标注」的无限循环。文件用**真实存在的 tmp 文件**
-    （F-4 复合判据：异常 + 文件已不在 ⇒ 改判不可重试；本用例钉的是文件仍在时的既有重试/弃单口径）。"""
+    （F-4 复合判据：异常 + 文件已不在 ⇒ 改判不可重试；本用例钉的是后端异常 + 文件仍在时的既有重试/弃单口径）。"""
     q = tmp_path / "queue.md"
     broken = tmp_path / "broken.jpg"
     broken.write_bytes(b"\xff\xd8\x00garbage")  # 真实存在的文件（F-4 复合判据：exists 为真 ⇒ 不改判）
@@ -406,7 +407,7 @@ def test_drop_mark_failure_keeps_count_and_stalls(tmp_path, monkeypatch):
     monkeypatch.setattr(mw, "_notify_failure", lambda m: None)
 
     def boom_store_add(e, m, v):
-        raise RuntimeError("媒体库写入失败")
+        raise mw.llama_server.MediaEncodeBackendError("媒体库写入失败")
 
     def submit(fn):
         f = FakeFuture()
@@ -445,7 +446,7 @@ def test_drop_mark_missing_converges_without_stall(tmp_path, monkeypatch):
     """弃单路径的 missing 支（P2 审查覆盖空洞）：弃单标注窗口里 Chat 页面恰删了队列文件
     （``f4_mark_line_done`` 返 "missing"）⇒ 按弃单收敛（idle、reason 空、计数清零、SSE 失败
     事件照发），**不误报**「弃单失败」stalled（那会让计数保留、下轮重新编码再弃单，循环往复）。
-    图片文件用**真实存在的 tmp 文件**（F-4 复合判据：exists 为真 ⇒ 三次失败仍走既有弃单口径）。"""
+    图片文件用**真实存在的 tmp 文件**（F-4 复合判据：exists 为真 ⇒ 三次后端异常失败仍走既有弃单口径）。"""
     q = tmp_path / "queue.md"
     broken = tmp_path / "broken.jpg"
     broken.write_bytes(b"\xff\xd8\x00garbage")  # 真实存在的文件（F-4 复合判据：exists 为真 ⇒ 不改判）
@@ -455,7 +456,7 @@ def test_drop_mark_missing_converges_without_stall(tmp_path, monkeypatch):
     monkeypatch.setattr(mw, "_notify_failure", lambda m: None)
 
     def boom_store_add(e, m, v):
-        raise RuntimeError("媒体库写入失败")
+        raise mw.llama_server.MediaEncodeBackendError("媒体库写入失败")
 
     def submit(fn):
         f = FakeFuture()
@@ -1466,9 +1467,8 @@ def test_gate_empty_queue_shorts_before_gate(tmp_path):
 # ---------------------------------------------------------------------------
 # ⑮ 文件已不存在 ⇒ 不可重试（F-4/D-1）：显式 FileNotFoundError / TOCTOU（encoder 抛 RuntimeError
 # 但收敛时文件已不在）⇒ 一次处置——标注完成（行保留）、清旧计数、WARNING、如实文案（含「文件不存在」
-# 「无需重试」，不含「将自动重试」/「连续 n 次失败」），全程不写 _fail_counts；标注返 "failed" ⇒
-# stalled + 可辨 reason（不冻结在 encoding）；对照：RuntimeError 且文件存在 ⇒ 仍走既有 1/3。
-# ---------------------------------------------------------------------------
+# stalled + 可辨 reason（不冻结在 encoding）；对照：**非后端** RuntimeError 且文件存在 ⇒ 同样一次处置（可重试类别仅后端故障
+# ``MediaEncodeBackendError``，走 1/3→弃单）。
 
 class _LevelLogger:
     """loguru logger 的同形替身（收 warning/error/info 三路）——断言「文件不存在」处置走
@@ -1616,9 +1616,11 @@ def test_missing_file_mark_failed_stalls_with_distinguishable_reason(tmp_path, m
     assert (st["queue_depth"], st["queue_total"], st["queue_done"]) == (1, 1, 0)
 
 
-def test_runtime_error_with_file_present_still_retries(tmp_path, monkeypatch):
-    """⑨ 对照（不回归）：future 抛 `RuntimeError` 且文件**存在** ⇒ 复合判据不改判 ⇒ 仍走既有有界
-    重试 1/3（计数 +1、stalled + 重试文案、行保持未完成）——确定性拦截的重试口径不变（D-2）。"""
+def test_runtime_error_with_file_present_one_shot(tmp_path, monkeypatch):
+    """⑨ 对照（2026-10-17 用户定稿）：future 抛**非后端** `RuntimeError`（如白名单外拦截）且文件**存在**
+    ⇒ **一次处置**——标完成 + WARNING + ``_fail_counts`` 不写 + 文案含「无需重试」、不含「将自动重试」/
+    「连续 n 次失败」：可重试的失败类别只有媒体编码后端故障（``MediaEncodeBackendError``），确定性
+    拦截不占重试预算（D-2 演进）。"""
     q = tmp_path / "queue.md"
     real = tmp_path / "real.jpg"
     real.write_bytes(b"\xff\xd8\x00garbage")  # 真实存在的文件（tmp 内），exists() 真值不改
@@ -1631,11 +1633,11 @@ def test_runtime_error_with_file_present_still_retries(tmp_path, monkeypatch):
         raise RuntimeError(f"白名单外图片格式，拦截: {p}（仅支持 JPEG/PNG/WEBP/HEIC）")
 
     env = _make_failure_env(q, boom, monkeypatch)
-    mw.tick(env); mw.tick(env)
+    mw.tick(env); mw.tick(env)  # tick#2 收敛 ⇒ 非后端异常 ⇒ 一次处置
     st = mw.get_state()
-    assert st["status"] == "stalled"
-    assert "失败重试中（1/3）" in st["reason"]
-    assert mw._fail_counts.get("a/real.jpg") == 1
-    assert (st["queue_depth"], st["queue_total"], st["queue_done"]) == (1, 1, 0)  # 重试期完成比不动
-    assert notices and "将自动重试" in notices[-1]  # 重试文案保留
-    assert queue_records(q)[0].get("done") is not True
+    assert st["status"] == "idle"  # 改走重试（stalled + 1/3）⇒ 红
+    assert (st["queue_depth"], st["queue_total"], st["queue_done"]) == (0, 1, 1)  # 一次处置计入完成比
+    assert mw._fail_counts == {}  # 非后端失败不占重试预算（旧契约会写成 1）
+    assert queue_records(q)[0]["done"] is True  # 标完成、行留在文件里
+    assert notices and "无需重试" in notices[-1]
+    assert "将自动重试" not in notices[-1] and "连续" not in notices[-1]
