@@ -199,7 +199,7 @@ bash launcher/build.sh --dmg    # 打 .app bundle + DMG 安装包（发布用）
 
 **许可证合规排除**（build.sh 的 rsync exclude）：
 - `python/` 排除 igraph/leidenalg/texttable（GPL）
-- `models/` 排除 `buffalo_l/*.onnx`（非商业许可，首次用自动下载到 `~/.insightface/`）
+- `models/` 排除 `buffalo_l/*.onnx`（非商业许可；程序内**禁止自动下载**——本地缺失时人脸识别直接报错并提示按 README「可选：启用照片处理」手动安装）
 - `ui/main/` 排除阿朱泡泡体 ttf（许可证存疑）
 
 **Windows 绿色包打包**（由 `pack.bat` 完成）：
