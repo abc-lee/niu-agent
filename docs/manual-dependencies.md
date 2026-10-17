@@ -316,7 +316,7 @@ def get_model():
 （函数保留但无生产调用方）。若将来真的换模型，**不要删整个
 `~/.niu/lightrag_storage/`** —— 那会连 3 个真相源（GraphML / full_docs / cache）
 一起毁掉。正确做法：**只删 3 个 `vdb_*.json`** 后重启，程序走既有修复链用新模型重建索引
-（详见 README「从 0.4.x 升级（必做）」与「已在 0.5.0 上迁移过？」两节）。
+（详见 `docs/upgrade-0.4-to-0.5.md`）。
 
 ### 2.3 Token 计数 tokenizer（DeepSeek-V3）
 
