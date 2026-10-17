@@ -105,6 +105,18 @@ class GemmaTokenizer:
                 )
         self._byte_token_table = table
 
+    def __copy__(self) -> GemmaTokenizer:
+        """浅拷贝返回自身：tokenizer 构造后不可变（encode/decode 只读），复制无意义。"""
+        return self
+
+    def __deepcopy__(self, memo: dict) -> GemmaTokenizer:
+        """深拷贝返回自身：LightRAG lightrag.py 的 aquery_data 开头
+        ``global_config = asdict(self)`` 每查询深拷贝整对象——拷贝 HF Rust
+        tokenizer 实测 1.85s/查询（序列化+反序列化）。而上游 12 处
+        ``global_config["tokenizer"]`` 用法全是 encode/decode 只读，
+        共享只读实例即可。"""
+        return self
+
     def _build_byte_token_table(self) -> dict[int, int]:
         """S11 D-1：扫描词表，收集字节回退 token，建 token_id → 字节值表。
 

@@ -10,12 +10,15 @@
 6. S11 切片场景：刻意构造的字节回退输入（U+3000/NBSP/U+2003/4 字节字符）按
    LightRAG 真实步进切片——每片 U+FFFD=0、内容保真（退化片豁免）、干净输入
    字节级不变、幂等、源文本自带 U+FFFD 不打 ERROR、表构建失败降级（见文末 S11 段）。
+7. 拷贝语义：copy.copy / copy.deepcopy 均返回自身（身份断言，回归 LightRAG
+   每查询 asdict 深拷贝整对象的 HF Rust tokenizer 拷贝开销，见 TestCopySemantics）。
 
 I-2a 基线语义：CI 断言的是"不变"（测试环境无 llama-server；真机与 /tokenize
 逐 ID 对拍是 I-2b，由人工 checklist 确认）。基线变更必须同提交更新并重跑 I-2b。
 """
 from __future__ import annotations
 
+import copy
 from pathlib import Path
 
 import pytest
@@ -137,6 +140,34 @@ class TestIdentity:
         """tokenizer.json 路径指向仓库内文件（已入 git，铁律十二）。"""
         assert gt.TOKENIZER_JSON_PATH.is_file(), f"tokenizer.json 应在位: {gt.TOKENIZER_JSON_PATH}"
         assert gt.TOKENIZER_JSON_PATH.stat().st_size > 1_000_000  # 33MB 级，防误指小文件
+
+
+# ============== 拷贝语义（LightRAG asdict 深拷贝回归） ==============
+
+
+class TestCopySemantics:
+    """copy.copy / copy.deepcopy 返回自身。
+
+    依据：LightRAG lightrag.py 的 aquery_data 开头 ``global_config = asdict(self)``
+    每查询深拷贝整个 LightRAG 对象，tokenizer 字段随之被深拷贝（拷贝 HF Rust
+    tokenizer 实测 1.85s/查询）；而 12 处 ``global_config["tokenizer"]`` 用法
+    全是 encode/decode 只读，共享只读实例即可。身份断言（不测时间）捕捉
+    "有人删掉 __copy__/__deepcopy__"的回归。
+    """
+
+    def test_copy_returns_self(self, gemma):
+        assert copy.copy(gemma) is gemma
+
+    def test_deepcopy_returns_self(self, gemma):
+        assert copy.deepcopy(gemma) is gemma
+
+    def test_copies_share_encode_decode(self, gemma):
+        """深拷贝后 encode/decode 与原件一致（共享只读实例）。"""
+        text = "通讯录：张三，电话 13800138000，邮箱 zhangsan@example.com"
+        for tok in (copy.copy(gemma), copy.deepcopy(gemma)):
+            ids = gemma.encode(text)
+            assert tok.encode(text) == ids
+            assert tok.decode(ids) == text
 
 
 # ============== 降级（D-3：不抛 + error 日志 + 原因可查） ==============
