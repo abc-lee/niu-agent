@@ -171,29 +171,40 @@ def test_unknown_format_blocked_without_sending(tmp_path, _patch_encoders):
     assert not _patch_encoders["path"] and not _patch_encoders["bytes"]
 
 
-def test_sniff_nonexistent_path_blocked_distinguishably(tmp_path, _patch_encoders):
-    """I-8/`_sniff_kind` total 契约（非法输入：不存在的路径）：`open` 抛 FileNotFoundError（OSError）⇒ 嗅探
-    返回 `"other"` 不外抛，分派器抛可辨「白名单外」RuntimeError（失败可辨、不静默，也不落入直送/缩放路径）——
-    两个编码器入口从未被调用。"""
-    with pytest.raises(RuntimeError, match="白名单外"):
+def test_sniff_nonexistent_path_raises_file_not_error(tmp_path, _patch_encoders):
+    """F-4 翻转：不存在的路径 ⇒ 存在性判定（护栏 classify **之前**）抛 `FileNotFoundError`（D-24 的显式
+    失败原因，消息含「文件不存在」）——缺失文件不再被 `_sniff_kind` 误判成「白名单外格式」RuntimeError
+    （`_sniff_kind` 的 total 契约不动、只管格式分判，存在文件的格式分判见 `test_unknown_format_blocked_without_sending`）。
+    工作者侧把该异常判为不可重试。两个编码器入口从未被调用。"""
+    with pytest.raises(FileNotFoundError, match="文件不存在"):
         media_downscale.encode_media_any(str(tmp_path / "no-such-file.jpg"))
     assert not _patch_encoders["path"] and not _patch_encoders["bytes"]
 
 
+def test_missing_file_raises_file_not_found_not_runtime_error(tmp_path, _patch_encoders):
+    """F-4 单测②：`encode_media_any(<不存在路径>)` ⇒ `FileNotFoundError`（**不得**是 RuntimeError）——
+    消息含「文件不存在」，与旧契约（缺失被判「白名单外」抛 RuntimeError）可辨；工作者侧据此不重试。"""
+    with pytest.raises(FileNotFoundError, match="文件不存在") as ei:
+        media_downscale.encode_media_any(str(tmp_path / "never-existed.jpg"))
+    assert not isinstance(ei.value, RuntimeError)  # FileNotFoundError 不是 RuntimeError 子类：按异常类型可辨
+    assert "白名单" not in str(ei.value)
+    assert not _patch_encoders["path"] and not _patch_encoders["bytes"]
+
+
 def test_sniff_directory_path_blocked_distinguishably(tmp_path, _patch_encoders):
-    """非法输入：目录。`open(目录, "rb")` 抛 IsADirectoryError（OSError 子类）⇒ 嗅探返回 `"other"` 不外抛
-    ⇒ 可辨「白名单外」拦截（目录不是合法图片：既不直送也不缩放）。"""
+    """F-4 翻转：目录。`os.path.isfile(目录)` 为假（非普通文件）⇒ 存在性判定抛 `FileNotFoundError`
+    （消息含「文件不存在」）——目录不是合法图片：既不直送也不缩放（旧「白名单外」误判已消）。"""
     d = tmp_path / "adir"
     d.mkdir()
-    with pytest.raises(RuntimeError, match="白名单外"):
+    with pytest.raises(FileNotFoundError, match="文件不存在"):
         media_downscale.encode_media_any(str(d))
     assert not _patch_encoders["path"] and not _patch_encoders["bytes"]
 
 
 def test_sniff_nul_path_blocked_distinguishably(tmp_path, _patch_encoders):
-    """非法输入：路径含 NUL。`open` 抛 ValueError（**不是 OSError**）⇒ 嗅探返回 `"other"` 不外抛
-    ⇒ 可辨「白名单外」拦截（与不存在路径/目录两条同型：不静默、不落入直送/缩放路径）。"""
-    with pytest.raises(RuntimeError, match="白名单外"):
+    """F-4 翻转：路径含 NUL。`os.path.isfile` 吞 ValueError 返假 ⇒ 存在性判定抛 `FileNotFoundError`
+    （消息含「文件不存在」，与不存在路径/目录两条同型：不静默、不落入直送/缩放路径）。"""
+    with pytest.raises(FileNotFoundError, match="文件不存在"):
         media_downscale.encode_media_any(str(tmp_path / "nul\x00file.jpg"))
     assert not _patch_encoders["path"] and not _patch_encoders["bytes"]
 
