@@ -44,13 +44,52 @@ def check_and_start():
     except Exception as e:
         print(f"[HAWatcher] 启动失败: {e}")
 
+def _is_restored_state_transition(trigger_data: dict) -> bool:
+    if not isinstance(trigger_data, dict):
+        return False
+    if trigger_data.get("platform") != "state":
+        return False
+    from_state = trigger_data.get("from_state")
+    if from_state is None:
+        return True
+    if not isinstance(from_state, dict):
+        return False
+    if "state" not in from_state:
+        return False
+    to_state = trigger_data.get("to_state")
+    if not isinstance(to_state, dict):
+        return False
+    if "state" not in to_state:
+        return False
+    from_val = from_state.get("state")
+    s = "" if from_val is None else str(from_val).strip().lower()
+    if s == "" or s in ("unavailable", "unknown", "none"):
+        return True
+    to_val = to_state.get("state")
+    if from_val == to_val:
+        return True
+    return False
+def _normalize_triggers(raw) -> list:
+    if not isinstance(raw, (list, tuple)):
+        return []
+    out = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        eid = item.get("entity_id")
+        if not isinstance(eid, str) or not eid.strip():
+            continue
+        out.append(item)
+    return out
 
 class _HAWatcher:
+
     def __init__(self):
         self._thread = None
         self._running = False
         self._last_mtime = 0
         self._current_subscriptions = {}
+        self._ignored_log_last = {}
         # 推送解耦（方案 §3.10）：单 worker 线程池（FIFO 保事件顺序）+ 无界队列。
         # 监听循环 recv 到事件后 submit 即返回——ping/配置检查/重连永不被推送阻塞。
         self._push_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ha-push")
@@ -100,7 +139,7 @@ class _HAWatcher:
 
         ha_url = config["ha_url"]
         ha_token = config.get("ha_token", "")
-        triggers = config.get("triggers", [])
+        triggers = _normalize_triggers(config.get("triggers", []))
 
         if not triggers:
             self._wait_for_config_change(timeout=30)
@@ -180,7 +219,12 @@ class _HAWatcher:
         return {"platform": "state", "entity_id": entity_id}
 
     def _handle_trigger_event(self, msg: dict, triggers: list):
-        event = msg.get("event", {})
+        triggers = _normalize_triggers(triggers)
+        if not isinstance(msg, dict):
+            return
+        event = msg.get("event")
+        if not isinstance(event, dict):
+            return
         sub_id = msg.get("id")  # subscribe_trigger 返回的 msg_id
 
         # 通过 msg_id 查找 trigger_id，再查找描述
@@ -190,18 +234,46 @@ class _HAWatcher:
                 trigger_id = tid
                 break
 
+        matched_trigger = None
         description = ""
         for t in triggers:
+            if not isinstance(t, dict):
+                continue
             if t.get("id") == trigger_id:
+                matched_trigger = t
                 description = t.get("description", f"{t.get('entity_id', '')} 状态变化")
                 break
 
+        variables = event.get("variables")
+        if not isinstance(variables, dict):
+            variables = {}
+        trigger_data = variables.get("trigger")
+        if not isinstance(trigger_data, dict):
+            trigger_data = {}
+
         if not description:
-            trigger_data = event.get("variables", {}).get("trigger", {})
-            entity_id = trigger_data.get("entity_id", "")
+            entity_id = trigger_data.get("entity_id", "") if isinstance(trigger_data, dict) else ""
             description = f"{entity_id} 状态变化"
 
-        # 解耦提交：监听循环只入队即返回，推送等待全部发生在后台 worker（方案 §3.10）
+        bypass_guard = isinstance(matched_trigger, dict) and "from_state" in matched_trigger
+        if (not bypass_guard) and _is_restored_state_transition(trigger_data):
+            from_state = trigger_data.get("from_state") if isinstance(trigger_data, dict) else None
+            to_state = trigger_data.get("to_state") if isinstance(trigger_data, dict) else None
+            from_val = from_state.get("state") if isinstance(from_state, dict) else from_state
+            to_val = to_state.get("state") if isinstance(to_state, dict) else to_state
+            label = trigger_id
+            if label is None:
+                label = trigger_data.get("entity_id", "") if isinstance(trigger_data, dict) else ""
+            if label is None:
+                label = ""
+            key = (label, from_val, to_val)
+            now = time.time()
+            last = self._ignored_log_last.get(key, 0)
+            if now - last >= 60:
+                self._ignored_log_last[key] = now
+                print(f"[HAWatcher] 忽略非真实状态转换（重启/恢复回填）: {from_val} -> {to_val} ({label})")
+            return
+
         self._submit_push(description)
 
     def _push_to_chat(self, description: str):
