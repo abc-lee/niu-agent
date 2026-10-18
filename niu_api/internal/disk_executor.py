@@ -208,6 +208,8 @@ class DiskExecutor:
                 try:
                     converted = json.loads(value)
                 except json.JSONDecodeError:
+                    if not value or not value.strip():
+                        return None, f"{tool_path}: --{arg.flag} invalid JSON: {value}（空值不是合法 JSON；要表达“没有”请省略该参数）"
                     return None, f"{tool_path}: --{arg.flag} invalid JSON: {value}"
             elif arg.cli_format == "key=value":
                 result = {}
@@ -230,7 +232,7 @@ class DiskExecutor:
                 except json.JSONDecodeError:
                     if not value or not value.strip():
                         # 空值保持报错（spec：空值报错不变），格式与 _convert_value 其他错误一致
-                        return None, f"{tool_path}: --{arg.flag} invalid JSON array: {value}"
+                        return None, f"{tool_path}: --{arg.flag} invalid JSON array: {value}（空值不是合法 JSON 数组；要表达“没有”请省略该参数）"
                     # 裸字符串容错：无法解析为 JSON 时包成单元素数组
                     converted = [value]
             elif arg.cli_format == "repeatable":

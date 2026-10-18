@@ -90,9 +90,10 @@ class DiskEngine:
             for d in sorted(self.config.directory_map.keys())
         )
         description = (
-            f"Virtual tool disk — Unix-like shell to discover and execute tools. "
+            f"Virtual tool disk — Unix-like shell to discover and execute ONE tool per call. "
+            f"Not a real shell: pipes (|), redirection (> <), and chaining (; && ||) are not supported. "
             f"Directories: {dirs_short}. "
-            f"Commands: ls [path] list, cat <path> help, /<dir>/<tool> [args] execute."
+            f"Commands: ls [path] list (ls [path] --all includes hidden low-frequency tools), cat <path> help, /<dir>/<tool> [args] execute."
         )
 
         return {
@@ -105,7 +106,7 @@ class DiskEngine:
                     "properties": {
                         "command": {
                             "type": "string",
-                            "description": "Shell command: ls [path] list, cat <path> help, /<dir>/<tool> [args] execute",
+                            "description": "Shell command: ONE tool per call, no pipes/redirection/chaining. ls [path] list (ls [path] --all includes hidden), cat <path> help, /<dir>/<tool> [args] execute",
                         },
                     },
                     "required": ["command"],

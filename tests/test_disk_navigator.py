@@ -174,3 +174,54 @@ class TestNavigationErrors:
         parsed = ParsedCommand(action="EXECUTE", dir_name="kg", tool_name=None, path="/kg")
         result = navigator.handle(parsed)
         assert "directory" in result.lower()
+
+
+class TestLsDirHidden:
+    def test_hidden_tools_not_listed_by_default(self, tmp_config_dir):
+        kg_yaml = tmp_config_dir / "kg-server.yaml"
+        data = yaml.safe_load(kg_yaml.read_text(encoding="utf-8"))
+        data["tools"]["hidden_tool"] = {
+            "summary": "hidden", "description": "hidden", "hidden": True, "args": [],
+        }
+        kg_yaml.write_text(yaml.dump(data), encoding="utf-8")
+        config = DiskConfig(str(tmp_config_dir))
+        nav = DiskNavigator(config)
+        result = nav.list_dir("/kg")
+        assert "个隐藏工具未列出" in result
+        assert "--all" in result
+        assert "hidden_tool" not in result
+
+    def test_show_all_includes_hidden(self, tmp_config_dir):
+        kg_yaml = tmp_config_dir / "kg-server.yaml"
+        data = yaml.safe_load(kg_yaml.read_text(encoding="utf-8"))
+        data["tools"]["hidden_tool"] = {
+            "summary": "hidden", "description": "hidden", "hidden": True, "args": [],
+        }
+        kg_yaml.write_text(yaml.dump(data), encoding="utf-8")
+        config = DiskConfig(str(tmp_config_dir))
+        nav = DiskNavigator(config)
+        result = nav.list_dir("/kg", show_all=True)
+        assert "hidden_tool" in result
+        assert "个隐藏工具未列出" not in result
+
+
+@pytest.fixture
+def tmp_config_dir(tmp_path):
+    config_dir = tmp_path / "disk"
+    config_dir.mkdir()
+    (config_dir / "kg-server.yaml").write_text(yaml.dump({
+        "server": "kg-server",
+        "directory": "kg",
+        "description": "知识图谱",
+        "tools": {
+            "explore_node": {"summary": "探索", "description": "d", "category": "explore", "args": []},
+            "graph_stats": {"summary": "统计", "description": "d", "args": []},
+        },
+    }), encoding="utf-8")
+    (config_dir / "memory-server.yaml").write_text(yaml.dump({
+        "server": "memory-server",
+        "directory": "memory",
+        "description": "记忆",
+        "tools": {"remember": {"summary": "保存", "description": "d", "args": []}},
+    }), encoding="utf-8")
+    return config_dir

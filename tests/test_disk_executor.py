@@ -145,6 +145,22 @@ class TestCorrectExecution:
         call_kwargs = mock_registry.get.return_value.call_args[1]
         assert call_kwargs["metadata"] == {"source": "chat"}
 
+    def test_object_empty_value_hint(self, executor, parser, mock_registry):
+        """object 参数传空串 ⇒ invalid JSON + 「省略该参数」提示（与 array 同款）。"""
+        parsed = parser.parse("/memory/remember 内容 --metadata ''")
+        result = executor.execute(parsed)
+        assert result.is_error is True
+        assert "invalid JSON" in result.value
+        assert "省略该参数" in result.value
+
+    def test_object_invalid_json_nonempty_no_omit_hint(self, executor, parser, mock_registry):
+        """非空非法 JSON（object）⇒ 错误信息含 invalid JSON 但不含「省略该参数」。"""
+        parsed = parser.parse("/memory/remember 内容 --metadata '{bad'")
+        result = executor.execute(parsed)
+        assert result.is_error is True
+        assert "invalid JSON" in result.value
+        assert "省略该参数" not in result.value
+
     def test_string_result_not_misidentified_as_error(self, executor, parser, mock_registry):
         """MCP tools returning strings (e.g. lightrag_query) must not be treated as errors."""
         mock_registry.get.return_value = MagicMock(return_value="query result text")
@@ -340,6 +356,7 @@ class TestArrayJsonBareString:
         result = executor.execute(parsed)
         assert result.is_error is True
         assert "invalid JSON array" in result.value
+        assert "省略该参数" in result.value
         assert "/kg/timeline" in result.value
 
     def test_whitespace_value_keeps_error(self, executor, parser, mock_registry):

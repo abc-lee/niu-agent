@@ -335,7 +335,7 @@ tools:
 设 `hidden: true` 的工具：
 - `ls /dir` 不显示
 - `ls /dir --all` 显示
-- `cat /dir/tool_name` 正常显示参数说明
+`disk` 工具的 schema/help 已提示 `ls --all`；空串 ≠ 空值，数组/对象参数要表达“没有”请省略该参数。
 - `/dir/tool_name args` 正常调用
 
 用途：低频工具（如 `list_supported_formats`、`lightrag_document_status`）设 hidden，避免 ls 列表过长干扰 LLM，但仍可按需调用。

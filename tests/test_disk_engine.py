@@ -171,7 +171,14 @@ class TestSchemaGeneration:
         desc = schema["function"]["description"]
         assert "kg" in desc
         assert "memory" in desc
+        assert "ONE tool per call" in desc
+        assert "pipe" in desc.lower()
+        assert "--all" in desc
 
+    def test_disk_schema_command_description_contains_no_pipes(self, engine):
+        schema = engine.get_schema()
+        cmd_desc = schema["function"]["parameters"]["properties"]["command"]["description"]
+        assert "no pipes" in cmd_desc
 
 # ---------------------------------------------------------------------------
 # Shell syntax rejection

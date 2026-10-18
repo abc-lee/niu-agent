@@ -56,7 +56,7 @@ class DiskNavigator:
             server = self.config.servers[server_name]
             lines.append(f"  {dir_name + '/':<16s} {server.description}")
         lines.append("")
-        lines.append("Usage: cat /<dir>/readme.txt for overview, cat /<dir>/<tool> for details, /<dir>/<tool> [args] to execute")
+        lines.append("Usage: cat /<dir>/readme.txt for overview, cat /<dir>/<tool> for details, /<dir>/<tool> [args] to execute; ls /<dir> --all includes hidden tools")
         return "\n".join(lines)
 
     def _list_subdir(self, path: str, *, show_all: bool = False) -> str:
@@ -75,6 +75,11 @@ class DiskNavigator:
             tools = self.config.list_visible_tools(dir_name)
 
         if not tools:
+            if not show_all:
+                all_tools = self.config.list_all_tools(dir_name)
+                hidden_count = sum(1 for t in all_tools if t.hidden)
+                if hidden_count > 0:
+                    return f"/{dir_name}: (no visible tools)\n\n({hidden_count} 个隐藏工具未列出，用 ls /{dir_name} --all 查看)\n\nUsage: ls / to list directories"
             return f"/{dir_name}: (no tools available)\n\nUsage: ls / to list directories"
 
         # Group by category
@@ -98,9 +103,14 @@ class DiskNavigator:
                     lines.append(f"  [{cat}]")
                 for tool in categories[cat]:
                     lines.append(f"    {tool.name:<22s} {tool.summary}")
-
+        # Hidden tools hint
+        if not show_all:
+            all_tools = self.config.list_all_tools(dir_name)
+            hidden_count = sum(1 for t in all_tools if t.hidden)
+            if hidden_count > 0:
+                lines.append(f"({hidden_count} 个隐藏工具未列出，用 ls /{dir_name} --all 查看)")
         lines.append("")
-        lines.append(f"Usage: cat /{dir_name}/readme.txt for overview, /{dir_name}/<tool> [args] to execute")
+        lines.append(f"Usage: cat /{dir_name}/readme.txt for overview, /{dir_name}/<tool> [args] to execute; ls /{dir_name} --all 含隐藏工具")
         return "\n".join(lines)
 
     # -------------------------------------------------------------------
@@ -248,10 +258,11 @@ class DiskNavigator:
             "Virtual Disk — Unix-like shell to discover and execute tools.\n\n"
             "COMMANDS:\n"
             "  ls [path]           List directories and tools\n"
-            "  ls --all <path>     List tools including hidden ones\n"
+            "  ls [path] --all     List tools including hidden ones\n"
             "  cat <path>          Read tool usage (README)\n"
             "  help                Show this help\n"
-            "  /<dir>/<tool>       Execute a tool\n\n"
+            "  /<dir>/<tool>       Execute a tool\n"
+            "  one tool per call; pipes/redirection/chaining are not supported\n"
             "GETTING STARTED:\n"
             "  ls /                List all service directories\n"
             "  ls /<dir>           List tools in a directory\n"
