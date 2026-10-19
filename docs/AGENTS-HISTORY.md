@@ -25,6 +25,14 @@
 - **审查**：计划 10 轮双审（A local-vision + B 远端）连续两轮零 P1/P2；实施 spec/quality 终审均 APPROVE、零 P1/P2。关键教训：asyncio `run_in_executor` 的包装取消 ≠ worker 结束；锁交接必须以 concurrent completion 为准。
 - **下一步**：P2b（ChatQueue 迁移到 runtime + 历史在 runtime 内读 + `_chat_lock` 接线 + 回复持久化顺序）、P3（前端三端点提交命令 + SSE 有界队列）、P4（审计/真机）。
 
+#### P2b：ChatQueue 迁移到 runtime（main `40f45223`）
+
+- **目标**：ChatQueue 只提交 `RunCommand`；runtime 内读历史（排除刚写 user ids）、持 `_chat_lock`、`on_complete` 持久化先于下一条命令；启动/关闭、忙信号、`/stop`/`/clear` 统一。
+- **实现**：`RunOutcome` + `RunCommand.exclude_message_ids/on_complete`；`_load_history_sync` 走 `get_context_for_chat(exclude_ids=...)`（未 transform view，保留出口触发线）；锁 acquire 用共享 holder/`abandoned` + done-callback 三态；`_execute` 先取 chunk 再判停止、停止后继续消费到自然退出、`advanced/pumped` 保新鲜 `_persisted_msgs`、取消/异常/未执行都走 `on_complete`；ChatQueue `_persist_outcome` 分支 neutral→error→LLM_ERROR→cancelled(三形状)→正常，holder 恒字符串；`start_chat_queue` runtime 先行、`stop_chat_queue` `to_thread(stop_instance)`；scheduler/db_monitor/chat status 用 `is_main_agent_busy()`，compat 两个“回合在跑”闸门保持锁判断。
+- **实施修复**：`agent/runner.py` 回合开始重置 `_persisted_msgs=[]`、finally 落本轮列表（早闭不陈旧）；history 超时 cancel；loop 查找移入 try；ChatQueue on_complete 主循环不可用时写 holder。
+- **验证**：点名 103–174 passed 多次；全量 **4747 passed / 36 failed / 179 skipped**；36 = 干净 HEAD 的 34 既存 + 2 个 `test_response_format_probe` 连接拒绝（clean HEAD 复现，环境）；最终实施 A/B 复核无 P1，两条 P2 为回归锁/台账缺口。
+- **后续**：P3 前端三端点提交命令 + SSE 有界队列；P4 审计/真机。
+
 ### 2026-10-17
 
 #### 小工程 F-4：媒体队列遇「文件已不存在」——不重试、不报 RuntimeError、归因如实（方案 R1–R3 → T1 双阶段审查 → 真机 AC 全过）
