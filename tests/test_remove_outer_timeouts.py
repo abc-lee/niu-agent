@@ -20,6 +20,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from loguru import logger
+from p2b_fakes import FakeRuntime
 
 import niu_api.compat as compat
 from agent import runner as runner_module
@@ -92,7 +93,7 @@ async def test_ta_chatqueue_scheduler_no_wake():
     from niu_api.chat_queue import ChatQueue
     from niu_api.chat_queue import ChatRequest as QueueRequest
 
-    q = ChatQueue(runner=SimpleNamespace())
+    q = ChatQueue(runner=SimpleNamespace(), runtime=FakeRuntime())
     processed = asyncio.Queue()
 
     async def fake_process(req):

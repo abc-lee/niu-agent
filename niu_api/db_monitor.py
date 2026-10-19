@@ -114,7 +114,7 @@ async def _drain_main_agent_request_queue() -> None:
     """链路 A：主 Agent 闲置时消费 MainAgentRequestQueue，推 SSE 触发前端。
 
     逻辑：
-    1. 检查 _chat_lock.locked()——主 Agent 忙则跳过（消息留队列）
+    1. 检查 is_main_agent_busy() or _chat_lock.locked()——主 Agent 忙则跳过（消息留队列）
     2. 检查 MainAgentRequestQueue.peek()——空则跳过
     3. 主 Agent 闲 + 队列有消息 → 推 SSE（notify_new_message_sync，source="subagent"）
     4. 阶段二 C1：notify 返回 False 表示推送失败（主 loop 不可用/已关闭/无订阅者），
@@ -128,10 +128,11 @@ async def _drain_main_agent_request_queue() -> None:
     content 直通 + peek_type() 日志标注（ask/notify）。
     """
     from agent.main_agent_request_queue import get_main_agent_request_queue
+    from agent.main_runtime import is_main_agent_busy
 
     from niu_api.compat import _chat_lock
 
-    if _chat_lock.locked():
+    if is_main_agent_busy() or _chat_lock.locked():
         return
 
     q = get_main_agent_request_queue()
@@ -161,7 +162,7 @@ def _remind_pending_asks(now: float | None = None, ask_queue_empty: bool | None 
     每 30s 检查主 Agent 状态为闲置 → 推送"有子 Agent 在后台等待回复"。
 
     判据（按序）：
-    1. _chat_lock.locked() → 主 Agent 忙（正在跑 LLM 轮），跳过
+    1. is_main_agent_busy() or _chat_lock.locked() → 主 Agent 忙（正在跑 LLM 轮），跳过
     2. PendingAskRegistry.waiting_unique_names() 空 → 无等待子 Agent，跳过
        （非空时顺带清理 _last_remind 中已不在等待的残留——future 被 set_answer/超时/终止移除）
     3. ask_queue_empty 快照非空 → ask 在迭代开始前未投递（P2：快照由 run_db_monitor
@@ -185,10 +186,12 @@ def _remind_pending_asks(now: float | None = None, ask_queue_empty: bool | None 
 
     from agent.ask_main_agent import get_pending_ask_registry
     from agent.main_agent_request_queue import get_main_agent_request_queue
+    from agent.main_runtime import is_main_agent_busy
+
     from niu_api.chat import notify_new_message_sync
     from niu_api.compat import _chat_lock
 
-    if _chat_lock.locked():
+    if is_main_agent_busy() or _chat_lock.locked():
         return
 
     waiting = get_pending_ask_registry().waiting_unique_names()

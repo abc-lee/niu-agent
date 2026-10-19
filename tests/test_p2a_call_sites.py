@@ -1,15 +1,20 @@
 """P2a 调用点级测试（计划 §5.3 关闭断言 + §5.4 阻塞闸门）。
 
-只覆盖四个 `runner.chat` 调用点的行为，不改生产代码：
+只覆盖三个 `runner.chat` 调用点的行为，不改生产代码：
 
 - §5.3 关闭断言：`finally` 里的 `gen.close()` 真的被调用。夹具是自定义 `FakeGen`
-  （记录 `close()`，不依赖 `inspect.getgeneratorstate`）——`compat`/`chat_queue` 的
+  （记录 `close()`，不依赖 `inspect.getgeneratorstate`）——`compat` 的
   循环体是 `chunks.append`，循环耗尽后生成器早已结束，GEN_CLOSED 断言恒真、会假绿。
+  `close()` 抛错必须被调用点 finally 单独捕获、不覆盖原异常。
 - §5.4 阻塞闸门：async 帧退出（取消 / SSE 断连）后 `_chat_lock` 必须一直持有到
   executor worker 真正结束（concurrent completion done），释放恰好一次，
   且 helper 收到的是 `concurrent.futures.Future`（completion）而不是 asyncio 的 `sf`。
-- §5.5 时序回归：`chat_queue` 的残留停止标志只能在 `acquire` **之后**清（D-8）；外层 try 之前的
-  早退必须抛原异常且不取锁；`gen.close()` 抛错必须被调用点 finally 单独捕获、不覆盖原异常。
+
+P2b Task 2b：`chat_queue` 不再是 `runner.chat` 调用点——gen.close、`_chat_lock` 持有/释放、
+clear_stop 时序（D-8）与取锁失败早退全部搬进 `MainAgentRuntime`，对应断言由
+tests/test_main_runtime.py 覆盖（`test_generator_closed_on_finish`、
+`test_runtime_holds_chat_lock_until_on_complete`、`test_clear_stop_precedes_chat_lock_release`、
+`test_chat_lock_acquire_timeout_yields_error_outcome_without_release`）。
 
 全 mock：假锁 / 假生成器 / AsyncMock store / 假 persist —— 禁真实 LLM、禁真实 messages.db。
 """
@@ -30,11 +35,10 @@ _LLM_CFG = {
     "model": "test-model",
 }
 
-# 四个调用点各自的 helper 命名空间（计划 §5.4：spy 必须打在调用点，不能只打 niu_api.chat_lock.*）
+# 三个调用点各自的 helper 命名空间（计划 §5.4：spy 必须打在调用点，不能只打 niu_api.chat_lock.*）
 _HELPER_TARGETS = {
     "chat": "niu_api.chat.chat_lock.release_chat_lock_when_done",
     "compat": "niu_api.compat.chat_lock.release_chat_lock_when_done",
-    "chat_queue": "niu_api.chat_queue.chat_lock.release_chat_lock_when_done",
 }
 
 
@@ -119,39 +123,6 @@ class _FakeLock:
         return self.held
 
 
-class _RecordingLock(_FakeLock):
-    """`_FakeLock` + acquire 事件记录与可控等锁窗口（停止标志时序回归用）。
-
-    `gate` 非 None 时：进入 `acquire` 即置 `acquire_started`，随后**在事件循环内轮询**等待放行
-    （不阻塞 loop）—— 测试因此能在"等锁窗口"内断言停止标志未被触碰；`acquire` 事件只在真正
-    拿到锁之后才记录。
-    """
-
-    def __init__(
-        self,
-        events: list[str],
-        gate: threading.Event | None = None,
-        gate_timeout: float = 15.0,
-    ) -> None:
-        super().__init__(events)
-        self._gate = gate
-        self._gate_timeout = gate_timeout
-        self.acquire_started = threading.Event()
-
-    async def acquire(self) -> bool:
-        self.acquire_calls += 1
-        if self._gate is not None:
-            self.acquire_started.set()
-            deadline = time.monotonic() + self._gate_timeout
-            while not self._gate.is_set():
-                if time.monotonic() > deadline:
-                    raise TimeoutError("acquire gate 未在超时内放行")
-                await asyncio.sleep(0.01)
-        self._events.append("acquire")
-        self.held = True
-        return True
-
-
 # ---------------------------------------------------------------------------
 # 环境 patch 助手（沿用 test_pipeline_queue_t4 / test_chat_queue 的 patch 清单）
 # ---------------------------------------------------------------------------
@@ -218,21 +189,6 @@ def _patch_compat_env(monkeypatch, runner) -> None:
     monkeypatch.setattr("niu_api.channel.gateway.push_im_reply", AsyncMock(return_value=False))
 
 
-def _patch_queue_env(monkeypatch, runner) -> None:
-    """`chat_queue._process_single` 的运行环境。"""
-    monkeypatch.setattr(
-        "niu_api.chat_queue.get_message_store", AsyncMock(return_value=_fake_store())
-    )
-    monkeypatch.setattr("niu_api.chat.notify_new_message", AsyncMock(return_value=True))
-    monkeypatch.setattr(
-        "niu_api.chat.persist_agent_reply",
-        AsyncMock(return_value=("msg-id", "persisted-reply")),
-    )
-    monkeypatch.setattr(
-        "agent.context_manager.get_context_manager", AsyncMock(return_value=_fake_cm())
-    )
-
-
 def _spy_stop_flags(monkeypatch, events: list[str]) -> None:
     """helper 内部是函数级 `from agent.runner import clear_stop, request_stop` → patch 模块属性即生效。"""
     monkeypatch.setattr("agent.runner.clear_stop", lambda: events.append("clear_stop"))
@@ -287,7 +243,7 @@ def _assert_completion_is_concurrent_future(completion) -> None:
 
 
 # ---------------------------------------------------------------------------
-# §5.3 四个调用点的关闭断言
+# §5.3 三个调用点的关闭断言
 # ---------------------------------------------------------------------------
 
 
@@ -354,25 +310,6 @@ async def test_close_compat_chat_session_closes_generator(monkeypatch):
     assert events[-2:] == ["clear_stop", "release"]
 
 
-async def test_close_chat_queue_process_single_closes_generator(monkeypatch):
-    """chat_queue._process_single：循环体正常耗尽也必须显式 close。"""
-    from niu_api.chat_queue import ChatQueue
-
-    fake = FakeGen("x")
-    runner = _make_runner(lambda: fake)
-    events: list[str] = []
-    monkeypatch.setattr("niu_api.compat._chat_lock", _FakeLock(events))
-    _patch_queue_env(monkeypatch, runner)
-    _spy_stop_flags(monkeypatch, events)
-
-    reply = await ChatQueue(runner)._process_single("你好")
-
-    assert fake.closed is True, "chat_queue._process_single 的 finally 未调用 gen.close()"
-    assert reply == "persisted-reply"
-    assert events.count("release") == 1
-    assert events[-2:] == ["clear_stop", "release"]
-
-
 async def test_close_chat_sync_close_exception_does_not_mask_original_error(monkeypatch):
     """close() 抛错必须被 finally 单独捕获：不覆盖循环体原异常、不改变返回、release 仍恰好一次。"""
     import niu_api.chat as chat_mod
@@ -394,7 +331,7 @@ async def test_close_chat_sync_close_exception_does_not_mask_original_error(monk
 
 
 # ---------------------------------------------------------------------------
-# §5.4 四条路径的阻塞闸门（取消 / 断连后锁持有到 worker 真正结束）
+# §5.4 三条路径的阻塞闸门（取消 / 断连后锁持有到 worker 真正结束）
 # ---------------------------------------------------------------------------
 
 
@@ -543,141 +480,3 @@ async def test_gate_compat_chat_session_holds_lock_until_worker_finishes(monkeyp
         gate.set()
 
 
-async def test_gate_chat_queue_holds_lock_until_worker_finishes(monkeypatch):
-    """chat_queue._process_single：取消后锁不得释放；worker 放行后释放恰好一次。"""
-    from niu_api.chat_queue import ChatQueue
-
-    gate = threading.Event()
-    fake = FakeGen("chunk-1", gate=gate)
-    runner = _make_runner(lambda: fake)
-    events: list[str] = []
-    lock = _FakeLock(events)
-    monkeypatch.setattr("niu_api.compat._chat_lock", lock)  # _process_single 内 `from niu_api.compat import _chat_lock`
-    _patch_queue_env(monkeypatch, runner)
-    _spy_stop_flags(monkeypatch, events)
-    calls = _spy_release(monkeypatch, "chat_queue")
-
-    try:
-        task = asyncio.create_task(ChatQueue(runner)._process_single("你好"))
-        await _wait_until(lambda: fake.blocked.is_set(), "worker 进入生成器阻塞点")
-
-        assert lock.locked() is True, "worker 仍在跑，锁已被提前释放"
-        assert calls == [], "async 帧尚未退出，helper 不应被调用"
-
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-
-        assert len(calls) == 1, f"helper 应被调用一次，实际 {len(calls)}"
-        completion, passed_lock = calls[0]
-        _assert_completion_is_concurrent_future(completion)
-        assert passed_lock is lock
-        assert not completion.done()
-        assert lock.locked() is True, "completion 未完成就释放了锁"
-        assert events.count("release") == 0
-        assert "request_stop" in events
-        # I-7：外层 finally 在 completion 未完成时不得触碰停止标志
-        assert events[-1] == "request_stop", f"外层 finally 提前 clear_stop：{events}"
-
-        gate.set()
-        await _pump()
-
-        assert completion.done()
-        assert fake.closed is True
-        assert events.count("release") == 1, "释放必须恰好一次"
-        assert events[-2:] == ["clear_stop", "release"], f"clear_stop 必须先于 release：{events}"
-        assert lock.locked() is False
-    finally:
-        gate.set()
-
-
-# ---------------------------------------------------------------------------
-# §5.5 停止标志时序（D-8）与早退路径（P2a 4.4）
-# ---------------------------------------------------------------------------
-
-
-def _spy_clear_stop_with_flag_state(monkeypatch, events: list[str]) -> None:
-    """clear_stop spy 按调用时的标志状态记事件：`clear_stop` = 真清残留（标志原为 set），
-    `clear_stop_noop` = 标志本已清零的空转调用（helper `_release` 的无条件调用即属此类）。
-
-    spy 必须真清标志（对齐 `agent.runner.clear_stop` 语义），否则 `is_stop_requested()` 判定失真。
-    """
-    from agent.runner import _stop_requested
-
-    def spy() -> None:
-        events.append("clear_stop" if _stop_requested.is_set() else "clear_stop_noop")
-        _stop_requested.clear()
-
-    monkeypatch.setattr("agent.runner.clear_stop", spy)
-
-
-async def test_chat_queue_clears_residual_stop_flag_only_after_acquire(monkeypatch):
-    """D-8 回归：残留停止标志只能在 acquire 之后清 —— 等锁窗口内不得触碰，acquire 后恰好一次。"""
-    from agent.runner import _stop_requested, is_stop_requested
-    from niu_api.chat_queue import ChatQueue
-
-    fake = FakeGen("x")
-    runner = _make_runner(lambda: fake)
-    flag_at_chat: list[bool] = []  # runner.chat 被调用那一刻的停止标志状态
-    real_chat = runner.chat
-
-    def chat_with_flag_probe(*args, **kwargs):
-        flag_at_chat.append(is_stop_requested())
-        return real_chat(*args, **kwargs)
-
-    runner.chat = chat_with_flag_probe
-
-    events: list[str] = []
-    gate = threading.Event()
-    lock = _RecordingLock(events, gate=gate)
-    monkeypatch.setattr("niu_api.compat._chat_lock", lock)  # _process_single 内局部 import
-    _patch_queue_env(monkeypatch, runner)
-    _spy_stop_flags(monkeypatch, events)
-    _spy_clear_stop_with_flag_state(monkeypatch, events)
-
-    _stop_requested.set()  # 模拟上一轮遗留的停止标志（autouse 夹具已把基线清零）
-
-    try:
-        task = asyncio.create_task(ChatQueue(runner)._process_single("你好"))
-        await _wait_until(lambda: lock.acquire_started.is_set(), "任务进入 _chat_lock.acquire")
-
-        # 等锁窗口：停止标志不得被触碰（D-8 删掉的 pre-lock clear 块正是这里要拦的）
-        assert events == [], f"acquire 完成前不得有任何锁/停止标志事件：{events}"
-        assert _stop_requested.is_set() is True, "等锁窗口内残留停止标志应仍在"
-
-        gate.set()
-        reply = await task
-
-        assert lock.acquire_calls == 1
-        assert "acquire" in events
-        assert events[: events.index("acquire")] == [], f"acquire 之前出现 clear_stop：{events}"
-        assert events.count("clear_stop") == 1, f"acquire 之后真清残留标志必须恰好一次：{events}"
-        assert events.index("clear_stop") > events.index("acquire"), f"clear_stop 早于 acquire：{events}"
-        assert flag_at_chat == [False], f"runner.chat 调用时残留停止标志未清：{flag_at_chat}"
-        assert reply == "persisted-reply"
-        assert fake.closed is True
-        assert events.count("release") == 1
-        assert events[-1] == "release"
-        assert lock.locked() is False
-    finally:
-        gate.set()  # 断言失败也必须放行 acquire，否则挂到 gate_timeout
-
-
-async def test_chat_queue_early_failure_before_acquire_keeps_lock_free(monkeypatch):
-    """早退回归：外层 try 之前的 await 失败必须抛**原异常**（不得 NameError: acquired），且锁未获取。"""
-    from niu_api.chat_queue import ChatQueue
-
-    runner = _make_runner(lambda: FakeGen("x"))
-    events: list[str] = []
-    lock = _RecordingLock(events)
-    monkeypatch.setattr("niu_api.compat._chat_lock", lock)
-    monkeypatch.setattr(
-        "niu_api.chat_queue.get_message_store", AsyncMock(side_effect=RuntimeError("store boom"))
-    )
-    _spy_stop_flags(monkeypatch, events)
-
-    with pytest.raises(RuntimeError, match="store boom"):
-        await ChatQueue(runner)._process_single("你好")
-
-    assert lock.acquire_calls == 0, "早退路径不得取锁"
-    assert events == [], f"早退路径不应有 acquire/release/clear_stop 事件：{events}"

@@ -2264,6 +2264,7 @@ class NiuRunner:
         full_resp = ""
         return_value = None
         self.last_return_value = None  # 重置，避免复用残留
+        self._persisted_msgs = []  # 重置：早闭（gen.close()/异常）时调用方不会读到上一轮陈旧值
         persisted_msgs = []  # V4: 已通过persist事件持久化的消息列表
         self._extracted_at_msgs = []  # 修正版方案：本轮流中提取的 subagent_msg 内容（persist_agent_reply 去重用）
         chat_idle_pushed = False  # 跟踪是否已推送 chat_idle，避免重复推送
@@ -2362,6 +2363,8 @@ class NiuRunner:
             if not chat_idle_pushed:
                 from niu_api.chat import notify_new_message_sync
                 notify_new_message_sync("", "chat_idle", "", source="electron")
+            # 早闭（GeneratorExit / 异常）也要落本轮新鲜值：post-finally 赋值此时不会执行
+            self._persisted_msgs = persisted_msgs
 
         # 暴露 return_value 给调用方（用于检测 CONTEXT_OVERFLOW 等控制流）
         self.last_return_value = return_value

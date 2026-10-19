@@ -1,9 +1,15 @@
-"""ChatQueue 单元测试 — 消息队列 + 串行处理 + 上下文合并"""
+"""ChatQueue 单元测试 — 消息队列 + 串行处理 + 上下文合并
+
+P2b Task 2b：ChatQueue 只剩入队 / 提交 / 路由（I-1）——历史、`_chat_lock`、`runner.chat`
+都在 runtime 线程内，本文件注入 `FakeRuntime`（独立线程执行命令）与 `live_main_loop`
+（`on_complete` 的 `run_coroutine_threadsafe` 桥接目标）。
+"""
 import asyncio
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from p2b_fakes import FakeRuntime, main_loop_thread
 
 
 @pytest.fixture(autouse=True)
@@ -30,33 +36,29 @@ def mock_store():
     return store
 
 
-def _setup_context_manager(mock_cm):
-    """配置 mock context_manager"""
-    mock_cm_instance = AsyncMock()
-    mock_cm_instance.get_context_for_chat.return_value = []
-    mock_cm.return_value = mock_cm_instance
-    return mock_cm_instance
+@pytest.fixture
+def fake_runtime():
+    """ChatQueue 的 runtime 替身：独立线程串行执行命令，history 固定为空（I-2）。"""
+    return FakeRuntime()
 
 
-# get_context_manager 是在 _process_single 内部延迟导入的，
-# 所以必须 patch 定义处 agent.context_manager.get_context_manager
-# （Task 3 溢出投递面收编：_check_overflow/_retry_force_compression 已整删，无需再隔离）
-
+@pytest.fixture
+def live_main_loop():
+    """on_complete 的桥接目标：`niu_api.chat._main_loop` 指向测试专用 loop 线程。"""
+    with main_loop_thread() as loop:
+        yield loop
 
 @pytest.mark.asyncio
-async def test_enqueue_and_process(mock_runner, mock_store):
+async def test_enqueue_and_process(mock_runner, mock_store, fake_runtime, live_main_loop):
     """单条消息入队后应被 ChatWorker 串行处理"""
     from niu_api.chat_queue import ChatQueue
 
-    q = ChatQueue(mock_runner)
+    q = ChatQueue(mock_runner, fake_runtime)
     processed = asyncio.Event()
 
     with patch("niu_api.chat_queue.get_message_store", return_value=mock_store), \
          patch("niu_api.chat.notify_new_message", new_callable=AsyncMock), \
-         patch("agent.context_manager.get_context_manager") as mock_cm, \
          patch("niu_api.chat.persist_agent_reply", new_callable=AsyncMock, return_value=("msg-id", "回复内容")):
-
-        _setup_context_manager(mock_cm)
 
         original = q._process_single
         async def tracked(*a, **kw):
@@ -70,29 +72,36 @@ async def test_enqueue_and_process(mock_runner, mock_store):
             result = await q.enqueue("你好")
             assert result.queued is True
             await asyncio.wait_for(processed.wait(), timeout=5.0)
-            # runner.chat(session_id, user_input, stream=False, history=...)
+            # runtime 线程内：runner.chat(session_id, user_input, stream=False, history=...)
             mock_runner.chat.assert_called_once()
             call_args = mock_runner.chat.call_args
             # 第二个位置参数是 user_input
             assert call_args[0][1] == "你好"
+            # I-2：历史改由 runtime 注入，ChatQueue 只交命令字段
+            cmd = fake_runtime.commands[0]
+            assert cmd.content == "你好"
+            assert cmd.session_id == "default"
+            assert cmd.stream is False
+            assert cmd.exclude_message_ids == ["msg-id-1"]
+            # D-10：命令字段必须带上通道/来源（runtime 侧 _set_command_state 的判据）
+            assert cmd.channel == "electron"
+            assert cmd.source == "frontend"
+            assert cmd.channel_id == ""
         finally:
             await q.stop()
 
 
 @pytest.mark.asyncio
-async def test_message_merging(mock_runner, mock_store):
+async def test_message_merging(mock_runner, mock_store, fake_runtime, live_main_loop):
     """多条待处理消息应合并为一条传给 runner.chat()"""
     from niu_api.chat_queue import ChatQueue
 
-    q = ChatQueue(mock_runner)
+    q = ChatQueue(mock_runner, fake_runtime)
     processed = asyncio.Event()
 
     with patch("niu_api.chat_queue.get_message_store", return_value=mock_store), \
          patch("niu_api.chat.notify_new_message", new_callable=AsyncMock), \
-         patch("agent.context_manager.get_context_manager") as mock_cm, \
          patch("niu_api.chat.persist_agent_reply", new_callable=AsyncMock, return_value=("msg-id", "回复内容")):
-
-        _setup_context_manager(mock_cm)
 
         original = q._process_single
         async def tracked(*a, **kw):
@@ -109,6 +118,8 @@ async def test_message_merging(mock_runner, mock_store):
 
             await asyncio.wait_for(processed.wait(), timeout=5.0)
 
+            # 合并批次只提交一条 RunCommand → runtime 线程内只调一次 runner.chat
+            mock_runner.chat.assert_called_once()
             call_args = mock_runner.chat.call_args
             user_input = call_args[0][1]
             assert "第一条消息" in user_input
@@ -116,23 +127,23 @@ async def test_message_merging(mock_runner, mock_store):
             assert "再补充" in user_input
             assert "[补充1]" in user_input
             assert "[补充2]" in user_input
+            cmd = fake_runtime.commands[0]
+            assert cmd.content == user_input
+            assert len(cmd.exclude_message_ids) == 3
         finally:
             await q.stop()
 
 
 @pytest.mark.asyncio
-async def test_enqueue_returns_immediately(mock_runner, mock_store):
+async def test_enqueue_returns_immediately(mock_runner, mock_store, fake_runtime, live_main_loop):
     """enqueue 应立即返回，不等待处理完成"""
     from niu_api.chat_queue import ChatQueue
 
-    q = ChatQueue(mock_runner)
+    q = ChatQueue(mock_runner, fake_runtime)
 
     with patch("niu_api.chat_queue.get_message_store", return_value=mock_store), \
          patch("niu_api.chat.notify_new_message", new_callable=AsyncMock), \
-         patch("agent.context_manager.get_context_manager") as mock_cm, \
          patch("niu_api.chat.persist_agent_reply", new_callable=AsyncMock, return_value=("msg-id", "回复内容")):
-
-        _setup_context_manager(mock_cm)
 
         await q.start()
         try:
@@ -146,18 +157,15 @@ async def test_enqueue_returns_immediately(mock_runner, mock_store):
 
 
 @pytest.mark.asyncio
-async def test_enqueue_and_wait(mock_runner, mock_store):
+async def test_enqueue_and_wait(mock_runner, mock_store, fake_runtime, live_main_loop):
     """enqueue_and_wait 应等待处理完成后返回回复"""
     from niu_api.chat_queue import ChatQueue
 
-    q = ChatQueue(mock_runner)
+    q = ChatQueue(mock_runner, fake_runtime)
 
     with patch("niu_api.chat_queue.get_message_store", return_value=mock_store), \
          patch("niu_api.chat.notify_new_message", new_callable=AsyncMock), \
-         patch("agent.context_manager.get_context_manager") as mock_cm, \
          patch("niu_api.chat.persist_agent_reply", new_callable=AsyncMock, return_value=("msg-id", "回复内容")):
-
-        _setup_context_manager(mock_cm)
 
         await q.start()
         try:
@@ -168,18 +176,15 @@ async def test_enqueue_and_wait(mock_runner, mock_store):
 
 
 @pytest.mark.asyncio
-async def test_drain(mock_runner, mock_store):
+async def test_drain(mock_runner, mock_store, fake_runtime, live_main_loop):
     """drain 应清空队列并等待当前处理完成"""
     from niu_api.chat_queue import ChatQueue
 
-    q = ChatQueue(mock_runner)
+    q = ChatQueue(mock_runner, fake_runtime)
 
     with patch("niu_api.chat_queue.get_message_store", return_value=mock_store), \
          patch("niu_api.chat.notify_new_message", new_callable=AsyncMock), \
-         patch("agent.context_manager.get_context_manager") as mock_cm, \
          patch("niu_api.chat.persist_agent_reply", new_callable=AsyncMock, return_value=("msg-id", "回复内容")):
-
-        _setup_context_manager(mock_cm)
 
         await q.start()
         try:
@@ -194,20 +199,17 @@ async def test_drain(mock_runner, mock_store):
 
 
 @pytest.mark.asyncio
-async def test_is_processing_flag(mock_runner, mock_store):
+async def test_is_processing_flag(mock_runner, mock_store, fake_runtime, live_main_loop):
     """is_processing 应在处理期间为 True，处理完成后为 False"""
     from niu_api.chat_queue import ChatQueue
 
-    q = ChatQueue(mock_runner)
+    q = ChatQueue(mock_runner, fake_runtime)
     processing_during = asyncio.Event()
     processing_checked = asyncio.Event()
 
     with patch("niu_api.chat_queue.get_message_store", return_value=mock_store), \
          patch("niu_api.chat.notify_new_message", new_callable=AsyncMock), \
-         patch("agent.context_manager.get_context_manager") as mock_cm, \
          patch("niu_api.chat.persist_agent_reply", new_callable=AsyncMock, return_value=("msg-id", "回复内容")):
-
-        _setup_context_manager(mock_cm)
 
         original = q._process_single
         async def tracked(*a, **kw):
@@ -237,7 +239,7 @@ async def test_enqueue_sync_with_no_loop():
     """enqueue_sync 在所有循环都不可用时应返回失败"""
     from niu_api.chat_queue import ChatQueue
 
-    q = ChatQueue(MagicMock())
+    q = ChatQueue(MagicMock(), FakeRuntime())
 
     # 模拟 _main_loop=None 且无运行中循环
     with patch("niu_api.chat._main_loop", None), \
@@ -247,11 +249,11 @@ async def test_enqueue_sync_with_no_loop():
 
 
 @pytest.mark.asyncio
-async def test_drain_cancels_pending_futures(mock_runner, mock_store):
+async def test_drain_cancels_pending_futures(mock_runner, mock_store, fake_runtime):
     """drain 应为队列中等待的请求设置 reply_future 结果"""
     from niu_api.chat_queue import ChatQueue, ChatRequest
 
-    q = ChatQueue(mock_runner)
+    q = ChatQueue(mock_runner, fake_runtime)
 
     # 不启动 worker，直接入队
     loop = asyncio.get_running_loop()
@@ -285,30 +287,28 @@ class _FakeIMGateway:
 
 
 def _scheduler_patches(mock_store):
-    """scheduler 路由测试共用的 _process_single 补丁集"""
+    """scheduler 路由测试共用的 `_process_single` 补丁集（历史已归 runtime，无需 patch CM）"""
     return (
         patch("niu_api.chat_queue.get_message_store", return_value=mock_store),
         patch("niu_api.chat.notify_new_message", new_callable=AsyncMock),
-        patch("agent.context_manager.get_context_manager"),
         patch("niu_api.chat.persist_agent_reply", new_callable=AsyncMock, return_value=("msg-id", "回复内容")),
     )
 
 
 @pytest.mark.asyncio
-async def test_scheduler_reply_delivers_to_im(mock_runner, mock_store, monkeypatch):
+async def test_scheduler_reply_delivers_to_im(mock_runner, mock_store, fake_runtime, monkeypatch, live_main_loop):
     """scheduler 通道无 channel_id + 有 IM 继承（should_push_im True）：send_sync 投递回复内容
     （adapter _on_send state 分支用 reply 终结流式卡片），reply_future._im_finalized 置位"""
     from niu_api.chat_queue import ChatQueue
 
-    q = ChatQueue(mock_runner)
+    q = ChatQueue(mock_runner, fake_runtime)
     mock_runner.get_im_channel.return_value = "oc_im_cid_1"
     mock_runner.should_push_im.return_value = True  # 显式——MagicMock 自动真值防假绿
     gw = _FakeIMGateway()
     monkeypatch.setattr("niu_api.channel.gateway.get_im_gateway", lambda: gw)
 
-    p1, p2, p3, p4 = _scheduler_patches(mock_store)
-    with p1, p2, p3 as mock_cm, p4:
-        _setup_context_manager(mock_cm)
+    p1, p2, p3 = _scheduler_patches(mock_store)
+    with p1, p2, p3:
         await q.start()
         try:
             reply, future = await q.enqueue_and_wait_with_future("[定时任务] 吃药", timeout=10.0)
@@ -316,25 +316,29 @@ async def test_scheduler_reply_delivers_to_im(mock_runner, mock_store, monkeypat
             # 投递回复内容（替代"仅终结不投递"——用户拍板：定时任务回复必须走 IM）
             assert gw.sent == [("oc_im_cid_1", "回复内容", False, False)]
             assert getattr(future, "_im_finalized", False) is True
+            # D-10：scheduler 命令字段——channel/source 决定 runtime 侧 IM force 臂与 _request_source
+            cmd = fake_runtime.commands[0]
+            assert cmd.channel == "scheduler"
+            assert cmd.source == "scheduler"
+            assert cmd.channel_id == ""
         finally:
             await q.stop()
 
 
 @pytest.mark.asyncio
-async def test_scheduler_reply_force_only_delivers(mock_runner, mock_store, monkeypatch):
+async def test_scheduler_reply_force_only_delivers(mock_runner, mock_store, fake_runtime, monkeypatch, live_main_loop):
     """scheduler 通道无 IM 继承但 should_push_im True（定时任务天生置真——用户规则 3）：
     投递回复内容（adapter 无 state 有 content → send_markdown 独立消息/有流式卡则终结），_im_finalized 置位"""
     from niu_api.chat_queue import ChatQueue
 
-    q = ChatQueue(mock_runner)
+    q = ChatQueue(mock_runner, fake_runtime)
     mock_runner.get_im_channel.return_value = ""  # 无 IM 继承
     mock_runner.should_push_im.return_value = True
     gw = _FakeIMGateway()
     monkeypatch.setattr("niu_api.channel.gateway.get_im_gateway", lambda: gw)
 
-    p1, p2, p3, p4 = _scheduler_patches(mock_store)
-    with p1, p2, p3 as mock_cm, p4:
-        _setup_context_manager(mock_cm)
+    p1, p2, p3 = _scheduler_patches(mock_store)
+    with p1, p2, p3:
         await q.start()
         try:
             reply, future = await q.enqueue_and_wait_with_future("[定时任务] 打开咖啡机", timeout=10.0)
@@ -347,21 +351,20 @@ async def test_scheduler_reply_force_only_delivers(mock_runner, mock_store, monk
 
 
 @pytest.mark.asyncio
-async def test_scheduler_reply_no_flag_noop(mock_runner, mock_store, monkeypatch):
+async def test_scheduler_reply_no_flag_noop(mock_runner, mock_store, fake_runtime, monkeypatch, live_main_loop):
     """should_push_im False 时 scheduler 回复不投递、不置标志——锁「无标志不投递」闸门不变式。
     注意：生产上 scheduler 请求按规则 3 每轮重臂 force，双假仅 _chat_lock 超时等边缘路径可达——
     本用例锁的是闸门逻辑本身，非描述生产常态场景。"""
     from niu_api.chat_queue import ChatQueue
 
-    q = ChatQueue(mock_runner)
+    q = ChatQueue(mock_runner, fake_runtime)
     mock_runner.get_im_channel.return_value = ""
     mock_runner.should_push_im.return_value = False  # 显式——边缘路径（如 lock 超时未置位）
     gw = _FakeIMGateway()
     monkeypatch.setattr("niu_api.channel.gateway.get_im_gateway", lambda: gw)
 
-    p1, p2, p3, p4 = _scheduler_patches(mock_store)
-    with p1, p2, p3 as mock_cm, p4:
-        _setup_context_manager(mock_cm)
+    p1, p2, p3 = _scheduler_patches(mock_store)
+    with p1, p2, p3:
         await q.start()
         try:
             reply, future = await q.enqueue_and_wait_with_future("[定时任务] 边缘", timeout=10.0)
@@ -373,20 +376,19 @@ async def test_scheduler_reply_no_flag_noop(mock_runner, mock_store, monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_scheduler_reply_im_disconnected_noop(mock_runner, mock_store, monkeypatch):
+async def test_scheduler_reply_im_disconnected_noop(mock_runner, mock_store, fake_runtime, monkeypatch, live_main_loop):
     """should_push_im True 但 IM 未连接（gateway 未配置/未连上）：no-op 且不置 _im_finalized
     （不置位 = watcher 场景保留自推兜底语义；IM 未配置时无任何投递尝试异常）"""
     from niu_api.chat_queue import ChatQueue
 
-    q = ChatQueue(mock_runner)
+    q = ChatQueue(mock_runner, fake_runtime)
     mock_runner.get_im_channel.return_value = ""
     mock_runner.should_push_im.return_value = True
     gw = _FakeIMGateway(connected=False)
     monkeypatch.setattr("niu_api.channel.gateway.get_im_gateway", lambda: gw)
 
-    p1, p2, p3, p4 = _scheduler_patches(mock_store)
-    with p1, p2, p3 as mock_cm, p4:
-        _setup_context_manager(mock_cm)
+    p1, p2, p3 = _scheduler_patches(mock_store)
+    with p1, p2, p3:
         await q.start()
         try:
             reply, future = await q.enqueue_and_wait_with_future("[定时任务] 未连接", timeout=10.0)
@@ -398,20 +400,19 @@ async def test_scheduler_reply_im_disconnected_noop(mock_runner, mock_store, mon
 
 
 @pytest.mark.asyncio
-async def test_scheduler_merged_batch_all_futures_flagged(mock_runner, mock_store, monkeypatch):
+async def test_scheduler_merged_batch_all_futures_flagged(mock_runner, mock_store, fake_runtime, monkeypatch, live_main_loop):
     """同来源合并场景：两请求同窗口入队合并——遍历合并批次置位，supplement 的 future 也置位
     （只置 first_req 会让 supplement 的 watcher 自推 → 双投递）"""
     from niu_api.chat_queue import ChatQueue
 
-    q = ChatQueue(mock_runner)
+    q = ChatQueue(mock_runner, fake_runtime)
     mock_runner.get_im_channel.return_value = "oc_im_cid_1"
     mock_runner.should_push_im.return_value = True
     gw = _FakeIMGateway()
     monkeypatch.setattr("niu_api.channel.gateway.get_im_gateway", lambda: gw)
 
-    p1, p2, p3, p4 = _scheduler_patches(mock_store)
-    with p1, p2, p3 as mock_cm, p4:
-        _setup_context_manager(mock_cm)
+    p1, p2, p3 = _scheduler_patches(mock_store)
+    with p1, p2, p3:
         q.pause()  # 暂停 worker，确保两请求同窗口入队合并
         await q.start()
         try:

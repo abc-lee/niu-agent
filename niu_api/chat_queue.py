@@ -3,16 +3,17 @@ ChatQueue — 消息队列 + 串行处理 + 上下文合并
 
 替代 _chat_lock，所有消息来源（Electron、IM、Scheduler）统一入队，
 ChatWorker 串行处理，补充消息在下一轮合并到上下文中。
+P2b：ChatWorker 只提交 `RunCommand` 给 `MainAgentRuntime`（唯一主 Agent 执行体）——
+历史、`_chat_lock`、`runner.chat`、channel/source 状态与回复持久化都在 runtime 线程内完成。
 """
 import asyncio
 import itertools
 from dataclasses import dataclass, field
 
+from agent.main_runtime import MainAgentRuntime, RunCommand, RunOutcome
 from agent.runner import NiuRunner
 from agent.session import get_message_store
 from loguru import logger
-
-from niu_api import chat_lock
 
 
 def _classify_degraded_reason(chat_error) -> str:
@@ -60,9 +61,12 @@ class ChatQueue:
     处理期间到达的补充消息在下一轮合并到上下文中。
     """
 
-    def __init__(self, runner: NiuRunner):
+    def __init__(self, runner: NiuRunner, runtime: MainAgentRuntime):
         self._queue: asyncio.Queue[ChatRequest] = asyncio.Queue()
         self._runner = runner
+        # D-12：runtime 必填——生产由 get_chat_queue() 注入 MainAgentRuntime.instance(runner)，
+        # 测试注入 FakeRuntime（独立线程执行命令）
+        self._runtime = runtime
         self._worker_task: asyncio.Task | None = None
         self._running = False
         self._paused = False
@@ -85,11 +89,14 @@ class ChatQueue:
         """
         from niu_api.chat import get_or_create_runner
         self._runner = get_or_create_runner()
+        # D-7：runtime 与 runner 同步——待处理消息自动用新配置
+        self._runtime.set_runner(self._runner)
 
     async def start(self):
-        """启动 ChatWorker 后台协程"""
+        """启动 ChatWorker 后台协程（先把 runner 引用同步给 runtime）"""
         if self._running:
             return
+        self._runtime.set_runner(self._runner)
         self._running = True
         self._worker_task = asyncio.create_task(self._worker_loop())
         logger.info("[ChatQueue] Worker started")
@@ -170,8 +177,14 @@ class ChatQueue:
         全部返回点均为元组：/stop → ("已停止", None)；timeout → ("", future)；正常 → (reply, future)。"""
         # --- /stop directive: immediate stop, no queueing ---
         if content.strip() == "/stop":
-            from agent.runner import request_stop
-            request_stop()
+            # §4.5：注入依赖优先——self._runtime.cancel_active()（latch active + pending，
+            # 内部已 request_stop()）；无 cancel_active 的替身回落 request_stop()
+            cancel = getattr(self._runtime, "cancel_active", None)
+            if callable(cancel):
+                cancel()
+            else:
+                from agent.runner import request_stop
+                request_stop()
             logger.info("[ChatQueue] /stop requested (immediate)")
             return ("已停止", None)
 
@@ -274,7 +287,8 @@ class ChatQueue:
             for r in remaining:
                 self._queue.put_nowait(r)
 
-            # 合并补充消息（仅用于传给 runner.chat() 的参数）
+            # 合并补充消息：merged_content 进 RunCommand（runtime 内传给 runner.chat），
+            # all_contents 逐条写 user 行并作为 exclude_message_ids
             all_contents = [first_req.content] + [s.content for s in supplements]
             if supplements:
                 supplement_parts = []
@@ -347,171 +361,210 @@ class ChatQueue:
     async def _process_single(self, content: str, session_id: str = "default",
                               user_contents: list[str] | None = None, channel: str = "electron",
                               channel_id: str = "", source: str = "user") -> str:
-        """处理单条消息 — 加载历史，持久化 user 消息，调用 runner.chat()，持久化回复，SSE推送"""
-        from agent.runner import clear_stop, is_stop_requested
+        """处理单条消息 — 写 user 行 + 推 SSE，提交 RunCommand，返回 holder 文案。
 
-        # P2a 4.4：acquired/sf/completion 前置初始化 —— 外层 try 之前的 await 失败时，
-        # 外层 finally 引用的变量也必须有定义
-        acquired = False
-        sf = None
-        completion = None
+        D-6/I-1：历史读取、`_chat_lock`、`runner.chat`、channel/source 状态、回复持久化
+        全部归 MainAgentRuntime（专用线程）；ChatQueue 只剩入队/提交/路由。
+        """
+        from niu_api.chat import notify_new_message
 
+        store = await get_message_store()
+
+        # I-5：user 行先落库并推 SSE，再提交命令；返回的全部 id 作为 exclude_message_ids，
+        # runtime 读历史时必须排除它们（合并路径的 user_contents 同样覆盖）。
+        # 所有 source（包括 scheduler）写 DB 后都推 SSE，让前端实时显示 user 气泡——
+        # 走 ChatQueue 的路径都经这里推，chat_session 路径不走 ChatQueue，不会双推。
+        exclude_message_ids: list[str] = []
+        if user_contents:
+            for uc in user_contents:
+                user_msg_id = await store.add_message(role="user", content=uc)
+                await notify_new_message(user_msg_id, "user", uc, source="electron")
+                exclude_message_ids.append(str(user_msg_id))
+        else:
+            user_msg_id = await store.add_message(role="user", content=content)
+            await notify_new_message(user_msg_id, "user", content, source="electron")
+            exclude_message_ids.append(str(user_msg_id))
+
+        # holder 是命令结果唯一出口：初值空串，各终态由 _persist_outcome 无条件写入
+        holder: dict = {"reply": "", "error": None}
+
+        def on_complete(outcome: RunOutcome) -> None:
+            """D-5：runtime 线程内被调用（持锁、handle 收口前）——桥回主循环做持久化。
+
+            不设短超时（保 I-4：持久化完成前 handle 不 done，下一条命令不会先跑）；
+            等待期间每 60s 记一条 warning。主循环不可用 / 持久化异常只记录，
+            不改变命令结果。
+            """
+            from niu_api.chat import _main_loop
+
+            loop = _main_loop
+            if loop is None or loop.is_closed():
+                # 桥不回去也必须给 user 行一个回复文案：holder 是命令结果唯一出口
+                logger.error("[ChatQueue] Main loop unavailable, outcome not persisted")
+                holder["reply"] = "[系统繁忙，请重试]"
+                return
+            fut = asyncio.run_coroutine_threadsafe(
+                self._persist_outcome(store, outcome, holder), loop,
+            )
+            waited = 0.0
+            while True:
+                try:
+                    fut.result(timeout=60.0)
+                    return
+                except TimeoutError:
+                    if fut.done():
+                        # 持久化协程自身抛 TimeoutError（不是这里的等待超时）
+                        logger.error("[ChatQueue] Persist coroutine raised TimeoutError")
+                        return
+                    waited += 60.0
+                    logger.warning(
+                        f"[ChatQueue] on_complete persist still running ({waited:.0f}s)"
+                    )
+                except Exception as e:
+                    logger.error(f"[ChatQueue] on_complete persist failed: {e}")
+                    return
+
+        cmd = RunCommand(
+            content=content,
+            session_id=session_id,
+            source=source,
+            channel=channel,
+            channel_id=channel_id,
+            stream=False,
+            exclude_message_ids=exclude_message_ids,
+            on_complete=on_complete,
+        )
+        # §4.3：reply_future 不塞进 RunCommand——它仍只由 _process_with_merge finally 收口
         try:
-            from niu_api.compat import _chat_lock
+            handle = self._runtime.submit(cmd)
+        except Exception as exc:
+            # submit 失败（runtime 已停）→ 命令永不执行：在事件循环线程内直接落中性降级
+            # 回复（不走 on_complete——同线程 .result() 会自锁），保证 user 行有回复
+            logger.error(f"[ChatQueue] Submit failed: {exc}")
+            await self._persist_outcome(
+                store, RunOutcome(error=exc, neutral_degrade=True), holder,
+            )
+            return holder["reply"] or "[系统繁忙，请重试]"
 
-            store = await get_message_store()
+        # 与现状 `await sf` 一致：不设外层超时（先返回会让 on_complete 稍后落真回复 → 双回复）
+        await asyncio.to_thread(handle.wait)
+        if not holder["reply"]:
+            holder["reply"] = "[系统繁忙，请重试]"
+        return holder["reply"]
 
-            # 先加载历史上下文（此时不包含当前 user 消息，避免重复）
-            from agent.context_manager import get_context_manager
-            context_manager = await get_context_manager(store)
-            history_for_runner = await context_manager.get_context_for_chat(exclude_last=False)
-            history_len = len(history_for_runner)
+    async def _persist_outcome(self, store, outcome: RunOutcome, holder: dict) -> None:
+        """RunOutcome → DB / SSE / holder["reply"]（原持久化块整体搬入，§4.3）。
 
-            # 持久化 user 消息（每条独立持久化，在历史加载之后）
-            # 所有 source（包括 scheduler）写 DB 后都推 SSE，让前端实时显示 user 气泡
-            # 之前 source="scheduler" 被白名单排除，导致 scheduler 触发的对话前端看不到 user 消息
-            #
-            # 注意：ChatQueue _process_single 处理的所有消息都没在别处推 SSE——
-            # chat_session 路径不走 ChatQueue（直接调 _chat_lock + runner.chat + 自己推 SSE），
-            # 所有走 ChatQueue 的路径都经 _process_single，这里推 SSE 不会双推。
-            from niu_api.chat import notify_new_message
-            if user_contents:
-                for uc in user_contents:
-                    user_msg_id = await store.add_message(role="user", content=uc)
-                    await notify_new_message(user_msg_id, "user", uc, source="electron")
-            else:
-                user_msg_id = await store.add_message(role="user", content=content)
-                await notify_new_message(user_msg_id, "user", content, source="electron")
+        只在主循环线程（on_complete 经 run_coroutine_threadsafe 桥回）或 submit 失败路径调用。
+        不在这里 drain supplement——由 runtime 在释放锁之后处理（§4.1 步骤 6）。
+        """
+        chat_error = outcome.error
+        rv = outcome.return_value
+        full_reply = outcome.result
+        history_len = outcome.history_len
+        from agent.generic.litellm_adapter import (
+            extract_error_type,
+            format_llm_error_for_user,
+            is_litellm_error_type,
+        )
 
-            # 调用 runner.chat()（在 executor 中运行，不阻塞事件循环）
-            # NiuRunner.chat(session_id, user_input, stream=False, history=...)
-            def sync_chat():
-                chunks = []
-                gen = None
-                try:
-                    gen = self._runner.chat(session_id, content, stream=False, history=history_for_runner, channel_id=channel_id)
-                    for chunk in gen:
-                        chunks.append(chunk)
-                finally:
-                    # P2a D-5：显式 close 保证守卫令牌释放；close 异常单独捕获，不覆盖原异常
-                    if gen is not None:
-                        try:
-                            gen.close()
-                        except Exception:
-                            logger.exception("[ChatQueue] close generator failed")
-                return "".join(chunks)
+        from niu_api.chat import notify_llm_error_sync, persist_agent_reply
 
-            chat_error = None
+        # neutral_degrade 先于 error：drain / submit 失败 / 命令从未执行 → 固定中性文案 +
+        # degraded_reason=""，不调用 _classify_degraded_reason（没有真实错误可分类）
+        if outcome.neutral_degrade:
+            degraded_reply = "[系统繁忙，请重试]"
+            logger.error(
+                f"[ChatQueue] Command never executed, writing neutral reply. "
+                f"original_error={chat_error}"
+            )
             try:
-                acquired = await asyncio.wait_for(_chat_lock.acquire(), timeout=600.0)
-                if not acquired:
-                    raise TimeoutError("Timeout waiting for chat lock")
-                # D-8：残留停止标志清理移到取锁之后 —— 等锁期间不触碰停止标志
-                # （防在僵尸 run 仍在跑时抹掉用户 request_stop）
-                if is_stop_requested():
-                    logger.info("[ChatQueue] Clearing residual stop flag after acquiring chat lock")
-                    clear_stop()
-
-                if channel == "electron":
-                    self._runner.set_im_channel("")
-                    self._runner.set_im_force(False)
-                elif channel == "im":
-                    self._runner.set_im_channel(channel_id)
-                else:
-                    # scheduler / ha-watcher 等后台触发：直接置 IM 强制标志（定时任务天生发 IM）
-                    self._runner.set_im_force(True)
-                # 标记当前请求来源（归一化）：scheduler/ha-watcher → "scheduler"（子 Agent 停止隔离）；
-                # frontend/im → "user"（IM 对话也是用户对话，可被停止按钮停）
-                _norm_source = "scheduler" if source in ("scheduler", "ha-watcher") else "user"
-                prev_source = getattr(self._runner, "_request_source", "user")
-                self._runner._request_source = _norm_source
-                try:
-                    loop = asyncio.get_running_loop()
-                    sf, completion = chat_lock.start_executor(loop, sync_chat)
-                    full_reply = await sf
-                finally:
-                    self._runner._request_source = prev_source
-            except TimeoutError:
-                logger.error("[ChatQueue] Timeout waiting for chat lock")
-                chat_error = "timeout"
-                full_reply = "处理消息超时，请稍后重试"
-            except Exception as e:
-                logger.error(f"[ChatQueue] Chat error: {e}")
-                chat_error = e  # E2：保留异常对象（str() 化后 type() 判定恒 'str'——is_litellm_error_type 失效）；str() 插值/None 判定/日志均兼容
-                full_reply = f"处理消息时出错：{str(e)}"
-            finally:
-                if acquired:
-                    # P2a D-7：锁持有到 worker 真正结束（completion done）才释放
-                    chat_lock.release_chat_lock_when_done(completion, _chat_lock)
-
-            # 方案 A：异常时不进 DB（避免错误文本被下一轮 _inject_dynamic_resources 当 query 反复查 lightrag）
-            rv = getattr(self._runner, "last_return_value", None)
-            if chat_error is None:
-                if rv and isinstance(rv, dict) and rv.get("result") == "LLM_ERROR":
-                    # E2：LLM_ERROR 错误文本不落库（用户拍板"不写 DB"——刷新 Chat 从 DB 加载历史时自然消失）
-                    # full_reply 已是源头友好文案（agent_loop yield 双参）——不重复 format（通道 2 双包风险）
-                    # 该函数内 message_id 无读取点（return full_reply 不消费），无需赋值
-                    error_msg = rv.get("error_msg", "") or ""
-                    error_type = rv.get("error_type")
-                    from niu_api.chat import notify_llm_error_sync
-                    from agent.generic.litellm_adapter import extract_error_type, format_llm_error_for_user
-                    notify_llm_error_sync(
-                        error_type or extract_error_type(error_msg),
-                        format_llm_error_for_user(error_msg, error_type),
-                        "chat_queue",
-                    )
-                    # skip persist——错误文本不落库
-                else:
-                    # 持久化回复消息（使用共享函数）
-                    # source 强制 "electron"——所有 source（包括 scheduler）的 assistant 回复
-                    # 都走 electron SSE 通道推送给前端，避免被 notify_new_message 白名单过滤
-                    from niu_api.chat import persist_agent_reply
-                    persisted_msgs = getattr(self._runner, "_persisted_msgs", None)  # V4: 已逐条持久化的消息
-                    extracted_at_msgs = getattr(self._runner, "_extracted_at_msgs", None)  # 修正版方案：轮中提取的 subagent_msg（去重用）
-                    message_id, full_reply = await persist_agent_reply(store, rv, history_len, full_reply, source="electron", persisted_msgs=persisted_msgs, extracted_at_msgs=extracted_at_msgs)
-            else:
-                # 异常路径：中性占位符落库 + 友好文案投递 + notify 解耦（E2）
-                # DB 存中性占位符（错误细节不进 DB，避免污染下轮向量检索）；投递文本为友好文案（用户可见）
-                # type_name/is_llm 提前判定（与 persist 解耦）——persist 成败均 notify
-                # persisted_msgs 强制 None——异常路径下 _persisted_msgs 可能是上次的列表（语义陷阱）
-                # source 强制 "electron"——与正常路径一致，避免被 notify_new_message 白名单过滤
-                degraded_reply = "[系统繁忙，请重试]"  # 中性占位符落库（既有行为保持——错误细节不进 DB）
-                from niu_api.chat import notify_llm_error_sync
-                from agent.generic.litellm_adapter import format_llm_error_for_user, is_litellm_error_type
-                type_name = type(chat_error).__name__ if isinstance(chat_error, BaseException) else None
-                is_llm = bool(type_name) and is_litellm_error_type(type_name)
-                if is_llm:
-                    push_text = format_llm_error_for_user(str(chat_error), type_name)  # 友好文案（独立于 persist 成败）
-                # E4-12：降级是监控可见事件——非 LLM 异常（内部 bug/锁超时）error 级；
-                # LLM 异常保持 warning（notify_llm_error_sync 已负责用户可见）。degraded_reason 落库（DB 可追溯）。
-                degraded_reason = _classify_degraded_reason(chat_error)
-                _degraded_log = logger.error if not is_llm else logger.warning
-                _degraded_log(
-                    f"[ChatQueue] Chat error, writing degraded reply. original_error={chat_error}, degraded_reason={degraded_reason}"
+                message_id, _ = await persist_agent_reply(
+                    store, None, history_len, degraded_reply,
+                    source="electron", persisted_msgs=None, degraded_reason="",
                 )
-                from niu_api.chat import persist_agent_reply
-                try:
-                    message_id, _ = await persist_agent_reply(
-                        store, None, history_len, degraded_reply,
-                        source="electron", persisted_msgs=None,
-                        degraded_reason=degraded_reason,
-                    )
-                except Exception as persist_e:
-                    logger.error(f"[ChatQueue] Degraded reply persist failed: {persist_e}")
-                # 统一赋值：persist 失败 DB 降级但投递仍友好（try/except 后单行）
-                full_reply = push_text if is_llm else degraded_reply
-                if is_llm:
-                    notify_llm_error_sync(type_name, push_text, "chat_queue")  # notify 与 persist 解耦——persist 成败均推（Electron 并行可见性一致）；非 LLM 异常不 notify（不误标）
+            except Exception as persist_e:
+                logger.error(f"[ChatQueue] Neutral reply persist failed: {persist_e}")
+            holder["reply"] = degraded_reply
+            return
 
-            # Task 3 溢出投递面收编：_check_overflow/_retry_force_compression 降级重试链整删。
-            # 终态语义：压实后仍超限=放行服务端报错走既有降级回复（上方 chat_error 分支已落库）。
+        if chat_error is not None:
+            # 异常路径：中性占位符落库 + 友好文案投递 + notify 解耦（E2）
+            # DB 存中性占位符（错误细节不进 DB，避免污染下轮向量检索）；投递文本为友好文案
+            # persisted_msgs 强制 None——runtime 异常路径已置 None（陈旧值语义陷阱）
+            # source 强制 "electron"——与正常路径一致，避免被 notify_new_message 白名单过滤
+            degraded_reply = "[系统繁忙，请重试]"  # 中性占位符落库（既有行为保持）
+            type_name = type(chat_error).__name__ if isinstance(chat_error, BaseException) else None
+            is_llm = bool(type_name) and is_litellm_error_type(type_name)
+            if is_llm:
+                push_text = format_llm_error_for_user(str(chat_error), type_name)  # 友好文案（独立于 persist 成败）
+            # E4-12：降级是监控可见事件——非 LLM 异常（内部 bug/锁超时）error 级；
+            # LLM 异常保持 warning（notify_llm_error_sync 已负责用户可见）。degraded_reason 落库。
+            degraded_reason = _classify_degraded_reason(chat_error)
+            _degraded_log = logger.error if not is_llm else logger.warning
+            _degraded_log(
+                f"[ChatQueue] Chat error, writing degraded reply. original_error={chat_error}, degraded_reason={degraded_reason}"
+            )
+            try:
+                message_id, _ = await persist_agent_reply(
+                    store, None, history_len, degraded_reply,
+                    source="electron", persisted_msgs=None,
+                    degraded_reason=degraded_reason,
+                )
+            except Exception as persist_e:
+                logger.error(f"[ChatQueue] Degraded reply persist failed: {persist_e}")
+            # 统一赋值：persist 失败 DB 降级但投递仍友好（try/except 后单行）
+            holder["reply"] = push_text if is_llm else degraded_reply
+            if is_llm:
+                notify_llm_error_sync(type_name, push_text, "chat_queue")  # notify 与 persist 解耦——persist 成败均推
+            return
 
-            return full_reply
-        finally:
-            # I-7：外层兜底收窄——仅「持有过锁且 completion 已完成」时清残留停止标志；
-            # 等锁期间 / completion 未结束（worker 仍在跑）都不触碰停止标志
-            if acquired and (completion is None or completion.done()) and is_stop_requested():
-                clear_stop()
+        # E2：rv 为 LLM_ERROR（无论是否取消）→ 错误文本不落库（刷新 Chat 从 DB 加载历史时自然
+        # 消失），只 notify 用户可见；full_reply 已是源头友好文案，不重复 format（通道 2 双包风险）
+        if isinstance(rv, dict) and rv.get("result") == "LLM_ERROR":
+            error_msg = rv.get("error_msg", "") or ""
+            error_type = rv.get("error_type")
+            notify_llm_error_sync(
+                error_type or extract_error_type(error_msg),
+                format_llm_error_for_user(error_msg, error_type),
+                "chat_queue",
+            )
+            holder["reply"] = full_reply
+            return
+
+        if outcome.cancelled:
+            if rv is not None:
+                # 协作式 STOPPED：保留本轮 rv 与 persisted/extracted——沿用已落库前缀的去重/@ 语义
+                message_id, full_reply = await persist_agent_reply(
+                    store, rv, history_len, full_reply, source="electron",
+                    persisted_msgs=outcome.persisted_msgs,
+                    extracted_at_msgs=outcome.extracted_at_msgs,
+                )
+            elif full_reply.strip():
+                # 有部分文本但无 rv：正常 persist（advanced 已决定这两字段是否 None；
+                # degraded_reason 留空，不污染降级指标）
+                message_id, full_reply = await persist_agent_reply(
+                    store, None, history_len, full_reply, source="electron",
+                    persisted_msgs=outcome.persisted_msgs,
+                    extracted_at_msgs=outcome.extracted_at_msgs,
+                    degraded_reason="",
+                )
+            else:
+                # 零输出取消：不落库（有意偏差，计划 v1.9——与现状硬取消零输出不写 assistant 行
+                # 一致），只写 holder「已停止」
+                holder["reply"] = "已停止"
+                return
+            holder["reply"] = full_reply
+            return
+
+        # 正常回合：persist（persisted_msgs/extracted_at_msgs 来自本轮快照，去重判据唯一来源；
+        # source 强制 "electron"——所有 source 的 assistant 回复都走 electron SSE 推给前端）
+        message_id, full_reply = await persist_agent_reply(
+            store, rv, history_len, full_reply, source="electron",
+            persisted_msgs=outcome.persisted_msgs,
+            extracted_at_msgs=outcome.extracted_at_msgs,
+        )
+        holder["reply"] = full_reply
 
 
 # ============== 全局单例 ==============
@@ -521,27 +574,35 @@ _queue_stopped: bool = False
 
 
 def get_chat_queue() -> ChatQueue:
-    """获取全局 ChatQueue 实例"""
+    """获取全局 ChatQueue 实例（D-12：生产在此注入 MainAgentRuntime 单例）"""
     global _queue, _queue_stopped
     if _queue_stopped:
         raise RuntimeError("ChatQueue has been stopped")
     if _queue is None:
         from niu_api.chat import get_or_create_runner
         runner = get_or_create_runner()
-        _queue = ChatQueue(runner)
+        _queue = ChatQueue(runner, MainAgentRuntime.instance(runner))
     return _queue
 
 
 async def start_chat_queue():
-    """启动 ChatQueue（在 FastAPI startup 中调用）"""
+    """启动 ChatQueue（FastAPI startup 调用）——I-7：runner → runtime → worker"""
     q = get_chat_queue()
+    q._runtime.set_runner(q._runner)
+    q._runtime.start()
     await q.start()
 
 
 async def stop_chat_queue():
-    """停止 ChatQueue（在 FastAPI shutdown 中调用）"""
+    """停止 ChatQueue（FastAPI shutdown 调用）——I-7：反向关闭
+
+    runtime 的 join 不在主循环线程（D-7）：先停 worker，再 `to_thread` 停 runtime
+    （先 cancel active/pending，再等 active 自己收口——on_complete 才能落库）。
+    `_queue_stopped` 保持 True：关服期间新 enqueue 必须显式失败，不静默造未启动队列。
+    """
     global _queue, _queue_stopped
     _queue_stopped = True
     if _queue:
         await _queue.stop()
+        await asyncio.to_thread(MainAgentRuntime.stop_instance)
         _queue = None

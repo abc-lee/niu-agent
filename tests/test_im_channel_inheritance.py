@@ -1,7 +1,7 @@
 """IM 通道继承机制测试。"""
-import pytest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+
 from agent.runner import NiuRunner
 
 
@@ -88,21 +88,25 @@ class TestIMForceFlag:
 
 
 class TestChatQueueForceWiring:
-    """规则 3/2 接线行为锁定：置位/清除分支必须存在（防 implementer 漏写或写反）。"""
+    """规则 3/2 接线行为锁定：置位/清除分支必须存在（防 implementer 漏写或写反）。
+
+    P2b 起 channel/source 接线归 MainAgentRuntime._set_command_state（ChatQueue 只入队/提交）。
+    """
 
     def test_electron_branch_clears_force(self):
-        src = Path("niu_api/chat_queue.py").read_text(encoding="utf-8")
-        idx = src.index('if channel == "electron":')
-        seg = src[idx:idx + 150]
-        assert "set_im_force(False)" in seg, "electron 分支必须清 force（规则 2 转假）"
+        src = Path("agent/main_runtime.py").read_text(encoding="utf-8")
+        idx = src.index('if command.channel == "electron":')
+        # getattr 守卫 + 注释使分支变宽：窗口需覆盖到 set_force(False)（250 内不含 im/else 分支）
+        seg = src[idx:idx + 250]
+        assert "set_force(False)" in seg, "electron 分支必须清 force（规则 2 转假）"
 
     def test_scheduler_else_branch_sets_force(self):
-        src = Path("niu_api/chat_queue.py").read_text(encoding="utf-8")
+        src = Path("agent/main_runtime.py").read_text(encoding="utf-8")
         # else 分支紧随 im 分支之后；从 else: 行锚定（固定窗口会因注释长度截断）
-        idx = src.index('elif channel == "im":')
+        idx = src.index('elif command.channel == "im":')
         idx_else = src.index("else:", idx)
-        seg = src[idx_else:idx_else + 150]
-        assert "set_im_force(True)" in seg, "else 分支必须置 force（规则 3 定时任务置位）"
+        seg = src[idx_else:idx_else + 200]
+        assert "set_force(True)" in seg, "else 分支必须置 force（规则 3 定时任务置位）"
 
     def test_compat_electron_branch_clears_force(self):
         # compat.py chat_session 的 Electron 转假入口——锚定唯一文本 token「通道继承」注释：

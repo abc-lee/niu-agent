@@ -977,9 +977,11 @@ async def chat_status():
     窗口在 SSE 连接之后打开时，事件已随连接发出丢失，靠轮询补拉；
     服务端保留状态槽至下次加载周期，不随显示清除）。
     """
+    from agent.main_runtime import is_main_agent_busy
     from agent.mcp_loader import get_mcp_load_failures
 
-    return {"busy": _chat_lock.locked(), "mcp_load_failures": get_mcp_load_failures()}
+    busy = is_main_agent_busy() or _chat_lock.locked()
+    return {"busy": busy, "mcp_load_failures": get_mcp_load_failures()}
 
 
 @router.post("/api/stop_all")

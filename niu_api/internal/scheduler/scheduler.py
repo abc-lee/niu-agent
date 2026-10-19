@@ -240,7 +240,7 @@ class Scheduler:
             self._check_lock.release()
 
     def _is_backend_busy(self) -> bool:
-        """通过 run_coroutine_threadsafe 桥接读取后端 _chat_lock.locked()。
+        """通过 run_coroutine_threadsafe 桥接读取后端忙信号（§4.5：runtime busy or 锁）。
 
         复用项目既有桥接模式（service.py:100 等），不绕道 HTTP 自请求。
         - True：后端正在处理 chat 请求或 scheduler 任务，应等待
@@ -258,7 +258,8 @@ class Scheduler:
             return False
 
         async def _check():
-            return _chat_lock.locked()
+            from agent.main_runtime import is_main_agent_busy
+            return is_main_agent_busy() or _chat_lock.locked()
 
         try:
             future = asyncio.run_coroutine_threadsafe(_check(), loop)

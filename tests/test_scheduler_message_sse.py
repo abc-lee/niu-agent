@@ -1,15 +1,25 @@
 """scheduler 触发的消息走 SSE 推送测试
 验证 source="scheduler" 路径下 user 和 assistant 消息都调 notify_new_message
 （不 mock notify_new_message，用真实函数 + mock _event_subscribers 验证 put_nowait）
+P2b Task 2b：ChatQueue 只提交 RunCommand——注入 FakeRuntime（独立线程执行命令）与
+live_main_loop（on_complete 桥接目标；assistant 的 persist + SSE 推送都在该 loop 上跑）。
 """
 import asyncio
 import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from p2b_fakes import FakeRuntime, main_loop_thread
 
 from niu_api.chat import _event_subscribers
 from niu_api.chat_queue import ChatQueue
+
+
+@pytest.fixture
+def live_main_loop():
+    """on_complete 的桥接目标：`niu_api.chat._main_loop` 指向测试专用 loop 线程。"""
+    with main_loop_thread() as loop:
+        yield loop
 
 
 class _FakeStore:
@@ -22,14 +32,16 @@ class _FakeStore:
 
 
 @pytest.mark.asyncio
-async def test_scheduler_user_message_pushes_sse():
+async def test_scheduler_user_message_pushes_sse(live_main_loop):
     """scheduler 路径下 user 消息写入 DB 后推 SSE"""
-    q = ChatQueue(runner=MagicMock())
+    q = ChatQueue(runner=MagicMock(), runtime=FakeRuntime())
     await q.start()
 
     # mock runner.chat 正常返回
     def _ok(*args, **kwargs):
         yield "assistant reply"
+        # 正常收尾写 rv：advanced=True 且 rv=None 会被判成硬取消
+        q._runner.last_return_value = {"result": "CURRENT_TASK_DONE"}
     q._runner.chat = MagicMock(side_effect=_ok)
     q._runner.last_return_value = None
     q._runner._persisted_msgs = None
@@ -42,13 +54,10 @@ async def test_scheduler_user_message_pushes_sse():
 
     try:
         with patch("niu_api.chat_queue.get_message_store", new=AsyncMock(return_value=fake_store)):
-            with patch("agent.context_manager.get_context_manager", new=AsyncMock()) as mock_cm:
-                mock_cm.return_value.get_context_for_chat = AsyncMock(return_value=[])
-
-                await asyncio.wait_for(
-                    q.enqueue_and_wait(content="[定时任务] 吃药", source="scheduler", session_id="default"),
-                    timeout=5
-                )
+            await asyncio.wait_for(
+                q.enqueue_and_wait(content="[定时任务] 吃药", source="scheduler", session_id="default"),
+                timeout=5
+            )
 
         # 验证 SSE 事件被推送到订阅者队列
         events = []
@@ -69,13 +78,15 @@ async def test_scheduler_user_message_pushes_sse():
 
 
 @pytest.mark.asyncio
-async def test_scheduler_assistant_reply_pushes_sse():
+async def test_scheduler_assistant_reply_pushes_sse(live_main_loop):
     """scheduler 路径下 assistant 回复写入 DB 后推 SSE"""
-    q = ChatQueue(runner=MagicMock())
+    q = ChatQueue(runner=MagicMock(), runtime=FakeRuntime())
     await q.start()
 
     def _ok(*args, **kwargs):
         yield "⏰ 提醒时间到啦！"
+        # 同上：正常收尾必须写 rv，否则 advanced and rv is None → 误判取消
+        q._runner.last_return_value = {"result": "CURRENT_TASK_DONE"}
     q._runner.chat = MagicMock(side_effect=_ok)
     q._runner.last_return_value = None
     q._runner._persisted_msgs = None
@@ -86,13 +97,10 @@ async def test_scheduler_assistant_reply_pushes_sse():
 
     try:
         with patch("niu_api.chat_queue.get_message_store", new=AsyncMock(return_value=fake_store)):
-            with patch("agent.context_manager.get_context_manager", new=AsyncMock()) as mock_cm:
-                mock_cm.return_value.get_context_for_chat = AsyncMock(return_value=[])
-
-                await asyncio.wait_for(
-                    q.enqueue_and_wait(content="test", source="scheduler", session_id="default"),
-                    timeout=5
-                )
+            await asyncio.wait_for(
+                q.enqueue_and_wait(content="test", source="scheduler", session_id="default"),
+                timeout=5
+            )
 
         events = []
         while not test_queue.empty():
@@ -109,7 +117,7 @@ async def test_scheduler_assistant_reply_pushes_sse():
 
 
 @pytest.mark.asyncio
-async def test_scheduler_assistant_reply_with_rv_messages_pushes_sse():
+async def test_scheduler_assistant_reply_with_rv_messages_pushes_sse(live_main_loop):
     """scheduler 路径下 rv 含 messages 时（if 分支）也调 notify_new_message 推 SSE
 
     覆盖 persist_agent_reply 的 if 分支（L260-315）：
@@ -118,7 +126,7 @@ async def test_scheduler_assistant_reply_with_rv_messages_pushes_sse():
 
     与 test_scheduler_assistant_reply_pushes_sse（elif 分支，rv=None）互补。
     """
-    q = ChatQueue(runner=MagicMock())
+    q = ChatQueue(runner=MagicMock(), runtime=FakeRuntime())
     await q.start()
 
     def _ok(*args, **kwargs):
@@ -140,13 +148,10 @@ async def test_scheduler_assistant_reply_with_rv_messages_pushes_sse():
 
     try:
         with patch("niu_api.chat_queue.get_message_store", new=AsyncMock(return_value=fake_store)):
-            with patch("agent.context_manager.get_context_manager", new=AsyncMock()) as mock_cm:
-                mock_cm.return_value.get_context_for_chat = AsyncMock(return_value=[])
-
-                await asyncio.wait_for(
-                    q.enqueue_and_wait(content="[定时任务] 吃药", source="scheduler", session_id="default"),
-                    timeout=5
-                )
+            await asyncio.wait_for(
+                q.enqueue_and_wait(content="[定时任务] 吃药", source="scheduler", session_id="default"),
+                timeout=5
+            )
 
         events = []
         while not test_queue.empty():

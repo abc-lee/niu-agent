@@ -7,13 +7,12 @@
 - T7: call_subagent 的 stop 谓词按来源绑定（同步 user / 异步 user / program / 恢复 program / 恢复 user）
 - T7: _do_streaming_completion 的 was_stopped 隔离（program 子 Agent 正常输出不标中断）
 - T6: _tidy_context_impl 的 stop_aware（sleep 不 abort，force abort）
-- T3: chat_queue 来源归一化表达式
+- T3: main_runtime 来源归一化表达式（runner._request_source）
 """
 import threading
-
-import pytest
 from unittest import mock
 
+import pytest
 
 # ---- T1: _interruptible_iter 可中断等待 ----
 
@@ -454,20 +453,20 @@ def test_sleep_tidy_stop_aware_false():
 # ---- T3: source 归一化 ----
 
 def test_request_source_norm():
-    """chat_queue 来源归一化表达式：scheduler/ha-watcher→scheduler；frontend/im→user。
+    """main_runtime 来源归一化表达式：scheduler/ha-watcher→scheduler；frontend/im→user。
 
     直接提取仓库中的真实归一化表达式验证（避免测试复制逻辑产生漂移）。
+    P2b：归一化已从 ChatQueue 迁入 MainAgentRuntime._set_command_state（runner._request_source 赋值）。
     """
-    import inspect
     import re
+    from pathlib import Path
+    from types import SimpleNamespace
 
-    from niu_api import chat_queue
-
-    src = inspect.getsource(chat_queue)
-    m = re.search(r"_norm_source = (.+)$", src, re.MULTILINE)
-    assert m, "chat_queue.py 应包含 _norm_source 归一化表达式"
-    norm = eval("lambda source: " + m.group(1).strip(), {})
-    assert norm("scheduler") == "scheduler"
-    assert norm("ha-watcher") == "scheduler"
-    assert norm("frontend") == "user"
-    assert norm("im") == "user"
+    src = Path("agent/main_runtime.py").read_text(encoding="utf-8")
+    m = re.search(r"_request_source\s*=\s*\((.+?)\)\s*\n", src, re.DOTALL)
+    assert m, "agent/main_runtime.py 应包含 _request_source 归一化表达式"
+    norm = eval("lambda command: " + m.group(1).strip(), {"__builtins__": {}})
+    assert norm(SimpleNamespace(source="scheduler")) == "scheduler"
+    assert norm(SimpleNamespace(source="ha-watcher")) == "scheduler"
+    assert norm(SimpleNamespace(source="frontend")) == "user"
+    assert norm(SimpleNamespace(source="im")) == "user"

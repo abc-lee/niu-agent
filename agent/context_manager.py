@@ -395,7 +395,9 @@ class ContextManager:
         self._fold_stats["usage"] = usage
         return view
 
-    async def get_context_for_chat(self, exclude_last: bool = True) -> list[dict[str, Any]]:
+    async def get_context_for_chat(
+        self, exclude_last: bool = True, *, exclude_ids: set[str] | None = None,
+    ) -> list[dict[str, Any]]:
         """
         获取用于聊天的上下文（主入口）——组装器视图（水位线模型）
 
@@ -414,11 +416,19 @@ class ContextManager:
 
         Args:
             exclude_last: 是否排除最后一条消息（当前用户输入）
+            exclude_ids: 需要排除的消息 id 集合（keyword-only；P2b D-3——提交方已落库的
+                user 行 id，历史不得再含它们）。按 `str(m.id)` 比较，空集/None 直接短路，
+                不传时行为与旧签名完全一致。
 
         Returns:
-            消息列表 [{"role": ..., "content": ..., ...}, ...]
+            消息列表 [{"role": ..., "content": ..., ...}, ...]——**未 transform 的组装
+            视图**：调用方（runner.chat → agent_loop）自己做且只做一次 transform，
+            调用方不得二次 transform（否则二次截断/剥 tool_calls/history_len 错位）。
         """
         messages = await self.store.get_messages(limit=None)
+        if exclude_ids:
+            # 过滤发生在组装之前：水位线/索引/折叠渲染都只看剩下的行
+            messages = [m for m in messages if str(getattr(m, "id", "")) not in exclude_ids]
         view = self.assemble_view_sync(messages, exclude_last)
 
         # Task 6：组装出口触发线检查——校准后总量估算达线只置 auto 意图

@@ -1949,8 +1949,17 @@ async def chat_session(request: ChatRequest) -> ChatResponse:
 
     # --- /stop directive: stop current Agent work ---
     if request.message.strip() == "/stop":
+        # §4.5：优先 runtime.cancel_active()（latch active + pending，内部已 request_stop()）；
+        # 无单例/无方法回落 request_stop()
+        from agent.main_runtime import MainAgentRuntime
         from agent.runner import request_stop
-        request_stop()
+
+        runtime = MainAgentRuntime._instance
+        cancel = getattr(runtime, "cancel_active", None)
+        if callable(cancel):
+            cancel()
+        else:
+            request_stop()
         logger.info("[ChatSession] /stop requested")
         return ChatResponse(reply="已停止")
 
@@ -2271,9 +2280,17 @@ async def clear_chat(request: Request) -> dict:
     即时清除语义（§3.6）：取消清空前提炼——不再读取任何提炼开关字段，原「清空前先跑
     force 整理」通道已整块删除。
     """
-    # ① 停止主 Agent（既有）；② 唤醒睡眠管道（新增，无条件）——用户动作打断 Case 3
+    # ① 停止主 Agent（§4.5：优先 runtime.cancel_active() latch active + pending，无单例/无方法
+    # 回落 request_stop()）；② 唤醒睡眠管道（新增，无条件）——用户动作打断 Case 3
+    from agent.main_runtime import MainAgentRuntime
     from agent.runner import clear_stop, request_stop
-    request_stop()
+
+    runtime = MainAgentRuntime._instance
+    cancel = getattr(runtime, "cancel_active", None)
+    if callable(cancel):
+        cancel()
+    else:
+        request_stop()
     set_spirit_state("idle")
 
     # ③ 排队拿锁：无限心跳等待（替代旧 120s 拒绝清除）——对在途对话请求仍是排队语义
