@@ -56,6 +56,8 @@ class RunCommand:
     exclude_message_ids: list[str] = field(default_factory=list)
     # D-5: called on the runtime thread, inside _chat_lock, before the handle finishes
     on_complete: Callable[[RunOutcome], None] | None = None
+    # D-3: run 事件 sink（chunk/done/error/cancelled）——runtime 线程调用，_emit 锁外
+    on_event: Callable[[dict], None] | None = None
 
 
 class RunHandle:
@@ -101,6 +103,14 @@ class RunHandle:
             if self._finished:
                 return
             self._events.put(event)
+        # D-3: 出锁后才调 sink——sink 若回调 handle 的任何方法（cancel/events/wait）
+        # 都不会自死锁；sink 抛错只记录，不影响 run（R1）
+        sink = self.command.on_event
+        if sink is not None:
+            try:
+                sink(event)
+            except Exception:
+                logger.exception("[MainRuntime] on_event sink failed")
 
     def _set_result(self, result: str | None) -> None:
         with self._finish_lock:
@@ -341,6 +351,23 @@ class MainAgentRuntime:
             return self._active is not None or len(self._pending_handles) > 0 or (
                 thread_alive and not self._running
             )
+
+    def is_round_active(self) -> bool:
+        """I-6: 回合真在跑——active 命令，或 `_chat_lock` 被持有（compat /compact 等）。
+
+        pending 不算：排队中的命令还没开始，`/chat/session` 必须走正常 FIFO 提交，
+        而不是把 supplement 直接入队。`_chat_lock` 惰性 import；取不到时只回 active。
+        """
+        with self._state_lock:
+            active = self._active is not None
+        try:
+            from niu_api.compat import _chat_lock
+        except Exception:
+            return active
+        try:
+            return active or _chat_lock.locked()
+        except Exception:
+            return active
 
     def submit(self, command: RunCommand) -> RunHandle:
         handle = RunHandle(command)
@@ -707,6 +734,10 @@ class MainAgentRuntime:
         elif command.channel == "im":
             if set_channel is not None:
                 set_channel(command.channel_id)
+        elif command.channel == "inherit":
+            # D-6: compat /chat/session 的程序化回填（source==""）——通道继承：
+            # 既不清 channel/force（Electron 语义），也不置 force（后台触发语义）
+            pass
         else:
             # scheduler / ha-watcher and other background triggers arm the IM force flag
             if set_force is not None:
@@ -724,13 +755,21 @@ class MainAgentRuntime:
         runner._request_source = prev_source
 
 
+def get_main_runtime() -> MainAgentRuntime | None:
+    """D-8: 读现有单例，绝不创建（端点用它取 runtime；测试 monkeypatch 本函数注入 fake）。
+
+    没有单例时返回 None——端点按现有 busy/中性文案处理，不得顺手 `instance()` 拉起线程。
+    """
+    return MainAgentRuntime._instance
+
+
 def is_main_agent_busy() -> bool:
     """D-8: the single busy signal (runtime singleton exists and is busy).
 
     Callers import it lazily inside the function; scheduler/db_monitor/chat status
     combine it with `_chat_lock.locked()`.
     """
-    runtime = MainAgentRuntime._instance
+    runtime = get_main_runtime()
     if runtime is None:
         return False
     return runtime.is_busy()

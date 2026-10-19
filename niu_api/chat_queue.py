@@ -4,7 +4,9 @@ ChatQueue — 消息队列 + 串行处理 + 上下文合并
 替代 _chat_lock，所有消息来源（Electron、IM、Scheduler）统一入队，
 ChatWorker 串行处理，补充消息在下一轮合并到上下文中。
 P2b：ChatWorker 只提交 `RunCommand` 给 `MainAgentRuntime`（唯一主 Agent 执行体）——
-历史、`_chat_lock`、`runner.chat`、channel/source 状态与回复持久化都在 runtime 线程内完成。
+历史、`_chat_lock`、`runner.chat`、channel/source 状态都在 runtime 线程内完成。
+P3 D-1：回复持久化实现抽到 `niu_api.main_agent_persist.persist_run_outcome`，
+ChatQueue 与三个前端端点共用同一份（分支次序不可重排）。
 """
 import asyncio
 import itertools
@@ -15,22 +17,7 @@ from agent.runner import NiuRunner
 from agent.session import get_message_store
 from loguru import logger
 
-
-def _classify_degraded_reason(chat_error) -> str:
-    """E4-12：降级回复错误类别——"timeout" | "internal"（DB 可追溯标记）。
-
-    仅运维可追溯用——用户侧保持中性占位符（E2 定案，不泄露内部错误细节）。
-    分类规则：
-    - 锁超时路径（chat_error 为字符串 "timeout"）→ "timeout"
-    - 异常对象类型名含 timeout（litellm.Timeout / APITimeoutError / TimeoutError 等瞬态）→ "timeout"
-    - 其余（含 LLM 非超时类如 RateLimitError）→ "internal"
-    """
-    if chat_error == "timeout":
-        return "timeout"
-    if isinstance(chat_error, BaseException):
-        if "timeout" in type(chat_error).__name__.lower():
-            return "timeout"
-    return "internal"
+from niu_api.main_agent_persist import persist_run_outcome
 
 
 @dataclass
@@ -386,7 +373,7 @@ class ChatQueue:
             exclude_message_ids.append(str(user_msg_id))
 
         # holder 是命令结果唯一出口：初值空串，各终态由 _persist_outcome 无条件写入
-        holder: dict = {"reply": "", "error": None}
+        holder: dict = {"reply": "", "message_id": None, "error": None}
 
         def on_complete(outcome: RunOutcome) -> None:
             """D-5：runtime 线程内被调用（持锁、handle 收口前）——桥回主循环做持久化。
@@ -453,118 +440,12 @@ class ChatQueue:
         return holder["reply"]
 
     async def _persist_outcome(self, store, outcome: RunOutcome, holder: dict) -> None:
-        """RunOutcome → DB / SSE / holder["reply"]（原持久化块整体搬入，§4.3）。
+        """RunOutcome → DB / SSE / holder（P3 D-1：实现已抽到 niu_api.main_agent_persist，三端点共用一份）。
 
         只在主循环线程（on_complete 经 run_coroutine_threadsafe 桥回）或 submit 失败路径调用。
         不在这里 drain supplement——由 runtime 在释放锁之后处理（§4.1 步骤 6）。
         """
-        chat_error = outcome.error
-        rv = outcome.return_value
-        full_reply = outcome.result
-        history_len = outcome.history_len
-        from agent.generic.litellm_adapter import (
-            extract_error_type,
-            format_llm_error_for_user,
-            is_litellm_error_type,
-        )
-
-        from niu_api.chat import notify_llm_error_sync, persist_agent_reply
-
-        # neutral_degrade 先于 error：drain / submit 失败 / 命令从未执行 → 固定中性文案 +
-        # degraded_reason=""，不调用 _classify_degraded_reason（没有真实错误可分类）
-        if outcome.neutral_degrade:
-            degraded_reply = "[系统繁忙，请重试]"
-            logger.error(
-                f"[ChatQueue] Command never executed, writing neutral reply. "
-                f"original_error={chat_error}"
-            )
-            try:
-                message_id, _ = await persist_agent_reply(
-                    store, None, history_len, degraded_reply,
-                    source="electron", persisted_msgs=None, degraded_reason="",
-                )
-            except Exception as persist_e:
-                logger.error(f"[ChatQueue] Neutral reply persist failed: {persist_e}")
-            holder["reply"] = degraded_reply
-            return
-
-        if chat_error is not None:
-            # 异常路径：中性占位符落库 + 友好文案投递 + notify 解耦（E2）
-            # DB 存中性占位符（错误细节不进 DB，避免污染下轮向量检索）；投递文本为友好文案
-            # persisted_msgs 强制 None——runtime 异常路径已置 None（陈旧值语义陷阱）
-            # source 强制 "electron"——与正常路径一致，避免被 notify_new_message 白名单过滤
-            degraded_reply = "[系统繁忙，请重试]"  # 中性占位符落库（既有行为保持）
-            type_name = type(chat_error).__name__ if isinstance(chat_error, BaseException) else None
-            is_llm = bool(type_name) and is_litellm_error_type(type_name)
-            if is_llm:
-                push_text = format_llm_error_for_user(str(chat_error), type_name)  # 友好文案（独立于 persist 成败）
-            # E4-12：降级是监控可见事件——非 LLM 异常（内部 bug/锁超时）error 级；
-            # LLM 异常保持 warning（notify_llm_error_sync 已负责用户可见）。degraded_reason 落库。
-            degraded_reason = _classify_degraded_reason(chat_error)
-            _degraded_log = logger.error if not is_llm else logger.warning
-            _degraded_log(
-                f"[ChatQueue] Chat error, writing degraded reply. original_error={chat_error}, degraded_reason={degraded_reason}"
-            )
-            try:
-                message_id, _ = await persist_agent_reply(
-                    store, None, history_len, degraded_reply,
-                    source="electron", persisted_msgs=None,
-                    degraded_reason=degraded_reason,
-                )
-            except Exception as persist_e:
-                logger.error(f"[ChatQueue] Degraded reply persist failed: {persist_e}")
-            # 统一赋值：persist 失败 DB 降级但投递仍友好（try/except 后单行）
-            holder["reply"] = push_text if is_llm else degraded_reply
-            if is_llm:
-                notify_llm_error_sync(type_name, push_text, "chat_queue")  # notify 与 persist 解耦——persist 成败均推
-            return
-
-        # E2：rv 为 LLM_ERROR（无论是否取消）→ 错误文本不落库（刷新 Chat 从 DB 加载历史时自然
-        # 消失），只 notify 用户可见；full_reply 已是源头友好文案，不重复 format（通道 2 双包风险）
-        if isinstance(rv, dict) and rv.get("result") == "LLM_ERROR":
-            error_msg = rv.get("error_msg", "") or ""
-            error_type = rv.get("error_type")
-            notify_llm_error_sync(
-                error_type or extract_error_type(error_msg),
-                format_llm_error_for_user(error_msg, error_type),
-                "chat_queue",
-            )
-            holder["reply"] = full_reply
-            return
-
-        if outcome.cancelled:
-            if rv is not None:
-                # 协作式 STOPPED：保留本轮 rv 与 persisted/extracted——沿用已落库前缀的去重/@ 语义
-                message_id, full_reply = await persist_agent_reply(
-                    store, rv, history_len, full_reply, source="electron",
-                    persisted_msgs=outcome.persisted_msgs,
-                    extracted_at_msgs=outcome.extracted_at_msgs,
-                )
-            elif full_reply.strip():
-                # 有部分文本但无 rv：正常 persist（advanced 已决定这两字段是否 None；
-                # degraded_reason 留空，不污染降级指标）
-                message_id, full_reply = await persist_agent_reply(
-                    store, None, history_len, full_reply, source="electron",
-                    persisted_msgs=outcome.persisted_msgs,
-                    extracted_at_msgs=outcome.extracted_at_msgs,
-                    degraded_reason="",
-                )
-            else:
-                # 零输出取消：不落库（有意偏差，计划 v1.9——与现状硬取消零输出不写 assistant 行
-                # 一致），只写 holder「已停止」
-                holder["reply"] = "已停止"
-                return
-            holder["reply"] = full_reply
-            return
-
-        # 正常回合：persist（persisted_msgs/extracted_at_msgs 来自本轮快照，去重判据唯一来源；
-        # source 强制 "electron"——所有 source 的 assistant 回复都走 electron SSE 推给前端）
-        message_id, full_reply = await persist_agent_reply(
-            store, rv, history_len, full_reply, source="electron",
-            persisted_msgs=outcome.persisted_msgs,
-            extracted_at_msgs=outcome.extracted_at_msgs,
-        )
-        holder["reply"] = full_reply
+        await persist_run_outcome(store, outcome, holder)
 
 
 # ============== 全局单例 ==============

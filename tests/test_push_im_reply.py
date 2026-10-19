@@ -1,11 +1,13 @@
 """push_im_reply 统一投递入口单测（mock 层，无真实 LLM / 网络 / 图谱写入）。
 
-覆盖五条路径（对应 gateway.py push_im_reply 全部分支）：
+覆盖六条路径（对应 gateway.py push_im_reply 全部分支）：
 1. should_push_im()=False（无 IM 标志）→ False，router/gateway 零调用
 2. has_channel('im')=False → False，不投递
 3. im_cid 非空 → route_out(reply, 'im', cid) → True（SEND 终结卡片）
 4. force-only（im_cid 空）+ gateway 已连接 → send_sync('', reply, pop_reply_to=False) → True
-5. force-only + gateway 未连接/None → router.push(reply, 'im', '') → True
+5. force-only + gateway 未连接/None → router.push(reply, 'im', '') 独立消息
+6. P3 D-6 `snapshot`：有快照只读快照（runner 标志零调用）——wait 之后 runner 标志
+   可能已被下一条命令改写；无快照（ChatQueue 等旧调用点）回退 runner 现读
 
 mock 目标为消费方命名空间（项目实证教训：patch 目标必须是消费方命名空间）：
 - get_channel_router 是 push_im_reply 函数体内局部 import → patch 'niu_api.channel.get_channel_router'
@@ -105,3 +107,83 @@ async def test_force_only_gateway_unavailable_pushes_independent(gateway):
     assert result is True
     router.push.assert_awaited_once_with("reply text", "im", "")
     router.route_out.assert_not_awaited()
+
+
+# ── 路径 6：P3 D-6 snapshot（chat_session 锁内快照）───────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_snapshot_is_read_instead_of_runner_flags():
+    """快照优先：should_push_im / im_channel_id 只读快照，runner 标志零调用。
+
+    D-6 的动机：`handle.wait()` 之后 runner 标志可能已被下一条命令改写——快照必须赢。
+    """
+    runner = _make_runner(should_push=False, im_cid="oc_runner")
+    router = _make_router(has_im=True)
+    snapshot = {"should_push_im": True, "im_channel_id": "oc_snapshot"}
+    with mock.patch("niu_api.channel.get_channel_router", return_value=router), \
+            mock.patch.object(gateway_mod, "get_im_gateway") as get_gw:
+        result = await gateway_mod.push_im_reply(runner, "reply text", snapshot=snapshot)
+    assert result is True
+    router.route_out.assert_awaited_once_with("reply text", "im", "oc_snapshot")
+    runner.should_push_im.assert_not_called()
+    runner.get_im_channel.assert_not_called()
+    get_gw.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_snapshot_false_suppresses_delivery_even_when_runner_true():
+    """快照说「不推」就不推：runner 现读为 True 也不得投递（闸门同样只读快照）。"""
+    runner = _make_runner(should_push=True, im_cid="oc_runner")
+    with mock.patch("niu_api.channel.get_channel_router") as get_router, \
+            mock.patch.object(gateway_mod, "get_im_gateway") as get_gw:
+        result = await gateway_mod.push_im_reply(runner, "reply text",
+                                                 snapshot={"should_push_im": False,
+                                                          "im_channel_id": "oc_snapshot"})
+    assert result is False
+    get_router.assert_not_called()
+    runner.should_push_im.assert_not_called()
+    get_gw.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_snapshot_force_only_uses_snapshot_channel_id():
+    """快照 im_channel_id 为空 → force-only 分支（send_sync 终结卡片），不回落 runner cid。"""
+    runner = _make_runner(should_push=True, im_cid="oc_runner")
+    router = _make_router(has_im=True)
+    gw = mock.MagicMock()
+    gw.is_connected = True
+    with mock.patch("niu_api.channel.get_channel_router", return_value=router), \
+            mock.patch.object(gateway_mod, "get_im_gateway", return_value=gw):
+        result = await gateway_mod.push_im_reply(
+            runner, "reply text",
+            snapshot={"should_push_im": True, "im_channel_id": ""},
+        )
+    assert result is True
+    gw.send_sync.assert_called_once_with("", "reply text", pop_reply_to=False)
+    router.route_out.assert_not_awaited()
+    runner.get_im_channel.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_snapshot_missing_key_is_treated_as_no_push():
+    """快照缺键按「不推」处理（holder 默认值语义），不得回退现读 runner 标志。"""
+    runner = _make_runner(should_push=True, im_cid="oc_runner")
+    with mock.patch("niu_api.channel.get_channel_router") as get_router:
+        result = await gateway_mod.push_im_reply(runner, "reply text", snapshot={})
+    assert result is False
+    get_router.assert_not_called()
+    runner.should_push_im.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_snapshot_none_falls_back_to_runner_flags():
+    """无快照（ChatQueue 等旧调用点）→ 回退 runner 现读，既有行为不变。"""
+    runner = _make_runner(should_push=True, im_cid="oc_runner")
+    router = _make_router(has_im=True)
+    with mock.patch("niu_api.channel.get_channel_router", return_value=router):
+        result = await gateway_mod.push_im_reply(runner, "reply text", snapshot=None)
+    assert result is True
+    router.route_out.assert_awaited_once_with("reply text", "im", "oc_runner")
+    runner.should_push_im.assert_called_once_with()
+    runner.get_im_channel.assert_called_once_with()

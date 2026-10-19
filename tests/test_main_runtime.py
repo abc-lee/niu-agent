@@ -294,6 +294,70 @@ def test_generator_closed_on_finish():
         rt.stop()
 
 
+def test_execute_close_exception_does_not_break_the_round(runtime_env, monkeypatch):
+    """生产 `_execute` 的 close 捕获（main_runtime.py:582-586）：close 抛错只记录——
+    不覆盖本轮 outcome、不跳过 on_complete、不让 runtime 线程崩。
+
+    驱动方式：stop 探针抛错 → 步骤 4 的 try 捕获 → 生成器停在 `yield` 处 →
+    finally 的 `gen.close()` 真被驱动（GeneratorExit 注入后生成器改抛 RuntimeError，
+    close() 随之抛错）。`test_generator_closed_on_finish` 只验 close 被调用，不验抛错。
+    """
+    outcomes: list[RunOutcome] = []
+    events: list[dict] = []
+
+    class CloseBoom:
+        def __init__(self):
+            self.last_return_value = None
+            self._persisted_msgs = None
+            self._extracted_at_msgs = None
+            self.closed = threading.Event()
+
+        def chat(self, *a, **k):
+            try:
+                yield "x"
+                self.last_return_value = {"result": "CURRENT_TASK_DONE"}
+            except GeneratorExit:
+                # close() 把 GeneratorExit 投进挂起的 yield → 这里改抛 → close() 抛错
+                self.closed.set()
+                raise RuntimeError("close boom") from None  # 有意替换 GeneratorExit
+
+    probe = {"boom": True}
+
+    def stop_probe():
+        if probe["boom"]:
+            raise RuntimeError("stop probe failed")  # 生成器因此停在 yield 处
+        return False
+
+    monkeypatch.setattr("agent.runner.is_stop_requested", stop_probe)
+
+    runner = CloseBoom()
+    rt = MainAgentRuntime(runner=runner)
+    rt.start()
+    try:
+        h = rt.submit(RunCommand(
+            content="x", on_complete=outcomes.append, on_event=events.append,
+        ))
+        assert h.wait(3) is None
+        assert runner.closed.is_set(), "close 必须被调用（即使它抛错）"
+        assert len(outcomes) == 1, "close 抛错不得跳过 on_complete"
+        outcome = outcomes[0]
+        # 本轮错误分类保留：close 异常既不覆盖 outcome.error，也不改成 neutral 降级
+        assert isinstance(outcome.error, RuntimeError)
+        assert str(outcome.error) == "stop probe failed", f"outcome 错误仍是本轮错误：{outcome.error}"
+        assert (outcome.cancelled, outcome.neutral_degrade) == (False, False)
+        # 已产出的 chunk 与终止事件都照常投递（D-3：sink 与 close 捕获互不影响）
+        assert [e["type"] for e in events] == ["chunk", "error"], f"事件次序：{events}"
+        assert events[0]["content"] == "x"
+        assert events[1]["error"] == "stop probe failed"
+        assert h.error == "stop probe failed", f"handle 错误仍是本轮错误：{h.error}"
+        # 回合未被破坏：runtime 线程存活，下一条命令照常收口
+        probe["boom"] = False
+        rt.set_runner(FakeRunner())
+        assert rt.submit(RunCommand(content="y")).wait(3) == "chunk:y"
+    finally:
+        rt.stop()
+
+
 def test_multi_chunk_join():
     class MultiChunk:
         last_return_value = None
@@ -1160,3 +1224,200 @@ def test_context_manager_exclude_ids_filters_before_assembly(tmp_path):
     # keyword-only：位置传参必须报错
     with pytest.raises(TypeError):
         asyncio.run(manager.get_context_for_chat(False, {"m002"}))
+
+
+# ── P3 Task 1：on_event sink / is_round_active / inherit / get_main_runtime ──
+
+
+def test_run_command_on_event_field_defaults_to_none():
+    def sink(event):
+        pass
+
+    assert RunCommand(content="x").on_event is None
+    assert RunCommand(content="x", on_event=sink).on_event is sink
+
+
+def test_on_event_receives_chunks_and_terminal_done(runtime_env):
+    events = []
+    rt = MainAgentRuntime(runner=FakeRunner())
+    rt.start()
+    try:
+        h = rt.submit(RunCommand(content="x", on_event=events.append))
+        assert h.wait(3) == "chunk:x"
+    finally:
+        rt.stop()
+
+    # D-3：sink 收到与 handle 队列同一批事件（chunk 全部 + 一个终止事件）
+    assert [e["type"] for e in events] == ["chunk", "done"]
+    assert events[0]["content"] == "chunk:x"
+    assert all(e["id"] == h.id for e in events)
+    # sink 不消费 handle 自己的队列（两条投递面互不干扰）
+    assert [e["type"] for e in h.events()] == ["chunk", "done"]
+
+
+def test_on_event_sink_exception_does_not_break_run(runtime_env):
+    seen = []
+
+    def boom(event):
+        seen.append(event["type"])
+        raise RuntimeError("sink boom")
+
+    rt = MainAgentRuntime(runner=FakeRunner())
+    rt.start()
+    try:
+        h = rt.submit(RunCommand(content="x", on_event=boom))
+        assert h.wait(3) == "chunk:x"
+        assert h.error is None
+        assert seen == ["chunk", "done"]
+        # R1：sink 抛错不污染后续命令
+        assert rt.submit(RunCommand(content="y")).wait(3) == "chunk:y"
+        runtime_env.pump()
+        assert runtime_env.lock.locked() is False
+    finally:
+        rt.stop()
+
+
+def test_on_event_sink_is_called_outside_finish_lock(runtime_env):
+    """D-3：sink 在 `_finish_lock` 外调用——sink 里调 handle.cancel() 也不自死锁。"""
+    handles = {}
+    seen = []
+
+    def sink(event):
+        seen.append(event["type"])
+        if event["type"] == "chunk":
+            handles["h"].cancel()
+
+    runner = BlockingRunner()
+    rt = MainAgentRuntime(runner=runner)
+    rt.start()
+    try:
+        h = rt.submit(RunCommand(content="x", on_event=sink))
+        handles["h"] = h
+        runner.release.set()
+        assert h.wait(3) is None
+        assert h.error == "cancelled"
+        assert seen == ["chunk", "cancelled"]
+    finally:
+        rt.stop()
+
+
+def test_is_round_active_covers_active_and_chat_lock_not_pending(runtime_env):
+    runner = BlockingRunner()
+    rt = MainAgentRuntime(runner=runner)
+    rt.start()
+    try:
+        assert rt.is_round_active() is False
+        h1 = rt.submit(RunCommand(content="block"))
+        assert runner.started.wait(2)
+        assert rt.is_round_active() is True            # 回合真在跑
+        h2 = rt.submit(RunCommand(content="queued"))   # pending 与 active 同窗
+        runner.release.set()
+        assert h1.wait(3) == "x"
+        assert h2.wait(3) == "x"
+        runtime_env.pump()
+        assert rt.is_round_active() is False
+
+        # compat /compact 等持锁但无 active 命令：仍算回合占用（R4）
+        runtime_env.run(runtime_env.lock.acquire())
+        try:
+            assert rt.is_round_active() is True
+        finally:
+            runtime_env.loop.call_soon_threadsafe(runtime_env.lock.release)
+            runtime_env.pump()
+        assert rt.is_round_active() is False
+    finally:
+        rt.stop()
+
+
+def test_is_round_active_ignores_queued_command():
+    """I-6：pending 只让 is_busy 为真，is_round_active 必须为假（supplement 语义不变）。"""
+    rt = MainAgentRuntime(runner=FakeRunner())
+    command = RunCommand(content="queued")
+    handle = RunHandle(command)
+    handle._runtime = rt
+    rt._pending_handles.add(handle)
+    assert rt.is_busy() is True
+    assert rt.is_round_active() is False
+
+
+@pytest.mark.parametrize(
+    "channel,source,want_channels,want_forces,want_source",
+    [
+        ("inherit", "", [], [], "user"),
+        ("inherit", "scheduler", [], [], "scheduler"),
+    ],
+)
+def test_inherit_channel_leaves_im_flags_untouched(
+    runtime_env, channel, source, want_channels, want_forces, want_source,
+):
+    """D-6：channel=="inherit" 不改 channel/force，但 `_request_source` 照常归一化。"""
+    runner = StateRunner()
+    rt = MainAgentRuntime(runner=runner)
+    rt.start()
+    try:
+        h = rt.submit(RunCommand(
+            content="x", channel=channel, source=source, channel_id="cid-9",
+        ))
+        assert h.wait(3) == "x"
+    finally:
+        rt.stop()
+    assert runner.source_during_run == want_source
+    assert runner.channels == want_channels
+    assert runner.forces == want_forces
+    assert runner._request_source == "user"
+
+
+def test_get_main_runtime_returns_singleton_or_never_creates(runtime_env):
+    from agent.main_runtime import get_main_runtime
+
+    assert MainAgentRuntime._instance is None
+    assert get_main_runtime() is None                 # D-8：不创建、不拉线程
+    assert MainAgentRuntime._instance is None
+    rt = MainAgentRuntime.instance(runner=FakeRunner())
+    assert get_main_runtime() is rt
+    MainAgentRuntime._instance = None
+    assert get_main_runtime() is None
+
+
+def test_persist_run_outcome_writes_holder_message_id(monkeypatch):
+    """D-1：落库分支写 holder["message_id"]；LLM_ERROR / 零输出取消保持 None。"""
+    from niu_api import chat as chat_mod
+    from niu_api.main_agent_persist import persist_run_outcome
+
+    async def fake_persist(store, rv, history_len, reply, **kwargs):
+        return ("assistant-1", reply)
+
+    monkeypatch.setattr(chat_mod, "persist_agent_reply", fake_persist)
+    monkeypatch.setattr(chat_mod, "notify_llm_error_sync", lambda *a: None)
+
+    def holder():
+        return {"reply": "", "message_id": None, "error": None}
+
+    async def _run():
+        normal = holder()
+        await persist_run_outcome(
+            object(),
+            RunOutcome(result="hi", return_value={"result": "CURRENT_TASK_DONE"}),
+            normal,
+        )
+        assert (normal["reply"], normal["message_id"]) == ("hi", "assistant-1")
+
+        zero_output = holder()
+        await persist_run_outcome(object(), RunOutcome(result="", cancelled=True), zero_output)
+        assert (zero_output["reply"], zero_output["message_id"]) == ("已停止", None)
+
+        llm_error = holder()
+        await persist_run_outcome(
+            object(),
+            RunOutcome(result="友好文案", return_value={"result": "LLM_ERROR", "error_msg": "boom"}),
+            llm_error,
+        )
+        assert (llm_error["reply"], llm_error["message_id"]) == ("友好文案", None)
+
+        degraded = holder()
+        await persist_run_outcome(object(), RunOutcome(error=TimeoutError("lock busy")), degraded)
+        assert degraded["reply"] == "[系统繁忙，请重试]"
+        assert degraded["message_id"] == "assistant-1"
+        assert degraded["error"] == "lock busy"
+
+    asyncio.run(_run())

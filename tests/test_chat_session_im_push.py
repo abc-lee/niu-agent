@@ -103,6 +103,24 @@ def test_push_uses_get_im_channel_for_channel_id():
         f"push_im_reply 参数应为 (runner, full_reply), 实际: {args}"
 
 
+def test_push_block_passes_holder_snapshot():
+    """P3 D-6：推送块必须把 on_complete 锁内快照 `holder` 作 `snapshot=` 传入。
+
+    `handle.wait()` 之后 runner 的 IM 标志可能已被下一条命令改写——现读会推错通道；
+    投递判定只认快照（`push_im_reply` 的 snapshot 分支）。
+    """
+    block = _push_block()
+    calls = [
+        c for c in ast.walk(block) if isinstance(c, ast.Call)
+        and ((isinstance(c.func, ast.Name) and c.func.id == "push_im_reply")
+             or (isinstance(c.func, ast.Attribute) and c.func.attr == "push_im_reply"))
+    ]
+    assert len(calls) == 1, f"推送块应恰有 1 处 push_im_reply 调用, 实际 {len(calls)}"
+    kwargs = {kw.arg: ast.unparse(kw.value) for kw in calls[0].keywords if kw.arg}
+    assert kwargs.get("snapshot") == "holder", \
+        f"push_im_reply 必须传 snapshot=holder（D-6），实际关键字: {kwargs}"
+
+
 def test_no_set_im_channel_in_push_block():
     """推送块内绝不调用 set_im_channel / set_im_force（规则 5：子 Agent 返回不改变标志）。"""
     block = _push_block()

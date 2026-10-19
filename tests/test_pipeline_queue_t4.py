@@ -1,7 +1,8 @@
 """T4 内部路径接入测试：入口 3/4/5 fire-and-forget + held=False；入口 6 直接清空（不再投递/等待 tidy）；入口 7 chat_queue await + 降级 attempt 串行。
 
 设计见 docs/superpowers/plans/2026-08-20-tidy-pipeline-queue.md §3.1 / §5 T4 / §6 T4。
-全 mock：`_tidy_context_impl`（阻塞/记录型假实现）/ runner / store / persist——禁真实 LLM、
+全 mock：`_tidy_context_impl`（阻塞/记录型假实现）/ runner / store / persist / runtime（P3 D-8：
+monkeypatch `agent.main_runtime.get_main_runtime` 注入 `p2b_fakes.FakeRuntime`）——禁真实 LLM、
 禁图谱写入、messages.db 零新增（全程不触真实 DB；入口 3/4/5 的 persist 也 mock 掉）。
 """
 import asyncio
@@ -10,7 +11,11 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
+from p2b_fakes import FakeRuntime, main_loop_thread
 
+# `persist_run_outcome` 惰性 import litellm（首次约 2.5s）——导入期预热一次，否则三条
+# 溢出用例的 3s `wait_for` 会被一次性 import 吃掉（假红相，与被测实现无关）。
+import agent.generic.litellm_adapter  # noqa: F401
 import niu_api.compat as compat
 from niu_api.compat import start_pipeline_queue, stop_pipeline_queue
 
@@ -65,6 +70,14 @@ def _spy_enqueue(monkeypatch) -> tuple[list, list[Future]]:
     return calls, futs
 
 
+def _fake_store(msg_id: str = "user-msg-1") -> MagicMock:
+    """假 store：`add_message` 可 await（端点 I-5 先落 user 行）。"""
+    store = MagicMock()
+    store.add_message = AsyncMock(return_value=msg_id)
+    store.get_messages = AsyncMock(return_value=[])
+    return store
+
+
 # ---------------------------------------------------------------------------
 # 入口 3：/chat（SSE）溢出 → fire-and-forget 投递 force + held=False
 # ---------------------------------------------------------------------------
@@ -85,6 +98,11 @@ async def test_entry3_chat_sse_overflow_fire_and_forget(monkeypatch):
     start_pipeline_queue()
     spy_calls, _ = _spy_enqueue(monkeypatch)
 
+    # D-8：端点改经 get_main_runtime() 取 runtime——必须注入 FakeRuntime，否则端点
+    # 早退中性文案，on_complete → CONTEXT_OVERFLOW → on_overflow 接线永不被驱动。
+    runtime = FakeRuntime(runner=mock_runner)
+    monkeypatch.setattr("agent.main_runtime.get_main_runtime", lambda: runtime)
+
     with (
         patch("niu_api.chat.get_or_create_runner", return_value=mock_runner),
         patch("niu_api.chat._load_llm_config", return_value={
@@ -92,7 +110,8 @@ async def test_entry3_chat_sse_overflow_fire_and_forget(monkeypatch):
             "apibase": "https://api.example.com", "model": "test-model",
         }),
         patch("niu_api.chat.notify_new_message", new_callable=AsyncMock),
-        patch("niu_api.chat.get_message_store", new_callable=AsyncMock),
+        patch("niu_api.chat.get_message_store", new_callable=AsyncMock, return_value=_fake_store()),
+        patch("niu_api.chat.notify_llm_error_sync", lambda *a: None),
         patch("niu_api.chat.persist_agent_reply", new_callable=AsyncMock, return_value=("msg-id", "reply-chunk")),
     ):
         async def _run_sse():
@@ -103,7 +122,11 @@ async def test_entry3_chat_sse_overflow_fire_and_forget(monkeypatch):
             return "".join(parts)
 
         # 端点应在整理任务完成前返回：错误实现（await 未完成 future）→ wait_for 超时红相
-        body = await asyncio.wait_for(_run_sse(), timeout=3.0)
+        try:
+            with main_loop_thread():
+                body = await asyncio.wait_for(_run_sse(), timeout=3.0)
+        finally:
+            runtime.stop()
 
     # 收编语义：直接调压实（fire-and-forget），零队列投递
     assert compact_calls == ["ChatSSE"], compact_calls
@@ -132,6 +155,10 @@ async def test_entry4_chat_sync_overflow_fire_and_forget(monkeypatch):
     start_pipeline_queue()
     spy_calls, _ = _spy_enqueue(monkeypatch)
 
+    # D-8：注入 FakeRuntime（见入口 3 注记）——溢出接线只能由真提交的回合驱动。
+    runtime = FakeRuntime(runner=mock_runner)
+    monkeypatch.setattr("agent.main_runtime.get_main_runtime", lambda: runtime)
+
     cm = MagicMock()
     cm.get_context_for_chat = AsyncMock(return_value=[])
 
@@ -142,13 +169,18 @@ async def test_entry4_chat_sync_overflow_fire_and_forget(monkeypatch):
             "apibase": "https://api.example.com", "model": "test-model",
         }),
         patch("niu_api.chat.notify_new_message", new_callable=AsyncMock),
-        patch("niu_api.chat.get_message_store", new_callable=AsyncMock),
+        patch("niu_api.chat.get_message_store", new_callable=AsyncMock, return_value=_fake_store()),
+        patch("niu_api.chat.notify_llm_error_sync", lambda *a: None),
         patch("agent.context_manager.get_context_manager", new_callable=AsyncMock, return_value=cm),
         patch("niu_api.chat.persist_agent_reply", new_callable=AsyncMock, return_value=("msg-id", "reply-chunk")),
     ):
-        resp = await asyncio.wait_for(
-            chat_sync_endpoint(ChatRequest(message="你好", session_id="test-session")), timeout=3.0
-        )
+        try:
+            with main_loop_thread():
+                resp = await asyncio.wait_for(
+                    chat_sync_endpoint(ChatRequest(message="你好", session_id="test-session")), timeout=3.0
+                )
+        finally:
+            runtime.stop()
 
     assert compact_calls == ["ChatSync"], compact_calls
     assert spy_calls == [], f"不应有任何队列投递，实际 {spy_calls}"
@@ -174,6 +206,10 @@ async def test_entry5_chat_session_overflow_fire_and_forget(monkeypatch):
     start_pipeline_queue()
     spy_calls, _ = _spy_enqueue(monkeypatch)
 
+    # D-8：注入 FakeRuntime（见入口 3 注记）；`is_round_active()` 假 ⇒ 走正常提交路径。
+    runtime = FakeRuntime(runner=mock_runner)
+    monkeypatch.setattr("agent.main_runtime.get_main_runtime", lambda: runtime)
+
     store = MagicMock()
     store.add_message = AsyncMock(return_value="user-msg-1")
     cm = MagicMock()
@@ -188,10 +224,17 @@ async def test_entry5_chat_session_overflow_fire_and_forget(monkeypatch):
         patch("agent.runner.clear_stop"),
         patch("agent.runner.drain_supplements"),
         patch("niu_api.chat.persist_agent_reply", AsyncMock(return_value=("persisted-msg-id", "persisted-reply"))),
+        patch("niu_api.chat.notify_llm_error_sync", lambda *a: None),
+        patch("niu_api.channel.gateway.push_im_reply", AsyncMock(return_value=True)),
     ):
-        resp = await asyncio.wait_for(
-            chat_session(ChatRequest(message="你好", session_id="default", source="electron")), timeout=3.0
-        )
+        try:
+            with main_loop_thread():
+                resp = await asyncio.wait_for(
+                    chat_session(ChatRequest(message="你好", session_id="default", source="electron")),
+                    timeout=3.0,
+                )
+        finally:
+            runtime.stop()
 
     assert compact_calls == ["ChatSession"], compact_calls
     assert spy_calls == [], f"不应有任何队列投递，实际 {spy_calls}"

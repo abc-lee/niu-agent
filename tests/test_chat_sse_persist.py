@@ -5,9 +5,10 @@
 2. LLM 返回纯文本回复"你好！我是妞妞"
 3. 验证数据库中有 role=assistant 的记录，content 为"你好！我是妞妞"
 
-测试策略：
+测试策略（P3 迁移）：
 - 使用 FastAPI TestClient 直接调用 /chat SSE 端点
-- Mock NiuRunner.chat() 返回纯文本流 + last_return_value
+- 经 `agent.main_runtime.get_main_runtime` 注入 `FakeRuntime`（D-8）：命令在其
+  独立线程内执行，`runner.chat` 只由该替身调用（I-1）
 - 使用临时 SQLite 数据库验证持久化结果
 - 通过 patch agent.session._message_store 全局变量注入临时 store
 """
@@ -89,15 +90,18 @@ def _make_mock_runner_for_plain_text(reply_text: str, user_input: str):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_chat_sse_persist_assistant_plain_text(temp_db_path, temp_message_store):
-    """端到端验证：/chat SSE 端点在纯文本回复时正确持久化 assistant 消息。
+async def test_chat_sse_persist_assistant_plain_text(
+    temp_db_path, temp_message_store, monkeypatch,
+):
+    """端到端验证：/chat SSE 端点在纯文本回复时正确持久化 assistant 消息（P3 D-4）。
 
-    完整路径：
-    1. 用户发 "你好"
-    2. LLM 返回纯文本 "你好！我是妞妞"
-    3. /chat 端点从 runner.last_return_value 提取 messages
-    4. 持久化 user + assistant 消息到 SQLite
-    5. 验证 DB 中有 role=assistant 的记录，content 为 "你好！我是妞妞"
+    P3 后的完整路径（I-1/I-2：端点只提交 RunCommand，不再 runner.chat）：
+    1. 用户发 "你好" → 端点写 user 行 + notify（§4.6 语义变化：不再"不写 user 行"）；
+    2. 端点提交 `RunCommand(stream=True, on_event=sink)`（测试经 `get_main_runtime`
+       注入 `FakeRuntime`，命令在其独立线程内执行）；
+    3. chunk 事件经 sink → 有界队列 → SSE `chunk` 帧；
+    4. `on_complete`（共享持久化 `persist_run_outcome`）落 assistant 行，先于 handle 收口；
+    5. SSE `done` 帧的 message_id 取自 holder（I-5）。
     """
     user_input = "你好"
     reply_text = "你好！我是妞妞"
@@ -108,6 +112,7 @@ async def test_chat_sse_persist_assistant_plain_text(temp_db_path, temp_message_
 
     # ---- 构造 FastAPI app ----
     from fastapi import FastAPI
+    from p2b_fakes import FakeRuntime, main_loop_thread
 
     import agent.session as session_module
     from niu_api.chat import router as chat_router
@@ -115,21 +120,25 @@ async def test_chat_sse_persist_assistant_plain_text(temp_db_path, temp_message_
     app = FastAPI()
     app.include_router(chat_router)
 
+    # D-8：端点经 agent.main_runtime.get_main_runtime 取 runtime —— 注入替身
+    runtime = FakeRuntime(runner=mock_runner)
+    monkeypatch.setattr("agent.main_runtime.get_main_runtime", lambda: runtime)
+    monkeypatch.setattr("niu_api.chat.get_or_create_runner", lambda: mock_runner)
+    monkeypatch.setattr("niu_api.chat._load_llm_config", lambda: {
+        "type": "openai",
+        "apikey": "test-api-key",
+        "apibase": "https://api.example.com",
+        "model": "test-model",
+    })
+    monkeypatch.setattr("niu_api.chat.notify_new_message", AsyncMock())
+
     # 保存原始全局 store，测试后恢复
     original_store = session_module._message_store
     session_module._message_store = temp_message_store
 
     try:
-        with (
-            patch("niu_api.chat.get_or_create_runner", return_value=mock_runner),
-            patch("niu_api.chat._load_llm_config", return_value={
-                "type": "openai",
-                "apikey": "test-api-key",
-                "apibase": "https://api.example.com",
-                "model": "test-model",
-            }),
-            patch("niu_api.chat.notify_new_message", new_callable=AsyncMock),
-        ):
+        # on_complete 的 run_coroutine_threadsafe 桥接目标（D-2 现读 _main_loop）
+        with main_loop_thread():
             client = TestClient(app)
 
             # ---- 发送 /chat 请求 ----
@@ -145,6 +154,7 @@ async def test_chat_sse_persist_assistant_plain_text(temp_db_path, temp_message_
             sse_text = response.text
             chunks = []
             done_received = False
+            done_message_id = None
             for line in sse_text.split("\n"):
                 if line.startswith("data: "):
                     data_str = line[len("data: "):]
@@ -154,6 +164,7 @@ async def test_chat_sse_persist_assistant_plain_text(temp_db_path, temp_message_
                             chunks.append(data["chunk"])
                         if data.get("done"):
                             done_received = True
+                            done_message_id = data.get("message_id")
                     except json.JSONDecodeError:
                         pass
 
@@ -164,8 +175,19 @@ async def test_chat_sse_persist_assistant_plain_text(temp_db_path, temp_message_
                 f"SSE 回复应包含 '{reply_text}'，实际: '{full_reply}'"
             )
             assert done_received, "SSE 应发送 done 信号"
+            assert done_message_id is not None, (
+                f"done 帧的 message_id 应来自 holder（I-5），实际: {sse_text}"
+            )
 
+        # runtime 线程已跑完本轮：命令字段可断言（I-2：端点只提交命令）
+        assert len(runtime.commands) == 1, f"应提交 1 条命令，实际: {len(runtime.commands)}"
+        cmd = runtime.commands[0]
+        assert cmd.stream is True, "/chat 提交的命令必须是流式"
+        assert cmd.channel == "electron" and cmd.source == "user"
+        assert cmd.on_event is not None, "/chat 必须挂 on_event sink（D-3）"
+        assert cmd.exclude_message_ids, "本次 user 行 id 必须进 exclude_message_ids"
     finally:
+        runtime.stop()
         # 恢复全局 store
         session_module._message_store = original_store
 
@@ -175,13 +197,10 @@ async def test_chat_sse_persist_assistant_plain_text(temp_db_path, temp_message_
     user_msgs = [m for m in messages if m.role == "user"]
     assistant_msgs = [m for m in messages if m.role == "assistant"]
 
-    # /chat SSE 端点设计上不持久化 user 消息：
-    # - persist_agent_reply（chat.py 行 279-280）显式 `if role == "user": continue` 跳过
-    # - /chat SSE 端点（chat.py 行 413-549）不调 store.add_message(role="user", ...)
-    # - 只有 /chat/sync 端点（chat.py 行 577-580）才写 user 消息
-    # 因此 DB 中 user 消息数应为 0。
-    assert len(user_msgs) == 0, (
-        f"/chat SSE 端点不应持久化 user 消息，实际: {len(user_msgs)} 条，"
+    # P3 §4.6 显式语义变化：/chat 由"不写 user 行"改为"写 user 行 + runtime 载历史
+    # （exclude_message_ids 排除本次 ids）"——user 行必须落库恰好一条。
+    assert len(user_msgs) == 1, (
+        f"/chat SSE 端点应持久化 1 条 user 消息，实际: {len(user_msgs)} 条，"
         f"所有消息: {[(m.role, m.content) for m in messages]}"
     )
     assert len(assistant_msgs) >= 1, (

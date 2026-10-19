@@ -8,16 +8,18 @@
    用户拍板"不写 DB"，刷新 Chat 从 DB 加载历史时错误自然消失
 3. 验证：返回 message_id=None（返回处无条件读取，不初始化则 NameError 500）
 
-测试策略：
+测试策略（P3 迁移）：
 - FastAPI TestClient 直接调用 /chat/sync（与 test_chat_sse_persist.py 同模式）
-- Mock NiuRunner.chat() 返回 LLM_ERROR 文本流 + 完成后设置 last_return_value = LLM_ERROR dict
-- patch 消费方命名空间：niu_api.chat 模块属性（_load_llm_config/get_or_create_runner/notify_new_message）
-  + agent.context_manager 源模块（chat_sync 函数内局部导入）+ agent.session 全局 store
+- 经 `agent.main_runtime.get_main_runtime` 注入 `FakeRuntime`（D-8）：端点只提交
+  `RunCommand(stream=False)`，`runner.chat` 由替身线程调用（I-1/I-2）
+- patch 消费方命名空间：niu_api.chat 模块属性（_load_llm_config/get_or_create_runner/
+  notify_new_message）+ agent.session 全局 store
+- `main_loop_thread()` 提供 `on_complete` 的桥接 loop（D-2 现读 `_main_loop`）
 - 使用临时 SQLite 数据库验证零错误落库（不触碰真实 ~/.niu/messages.db）
 """
 import os
 import tempfile
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -74,12 +76,14 @@ def _make_mock_runner_llm_error(reply_text: str, error_msg: str, error_type: str
 
 
 @pytest.mark.asyncio
-async def test_chat_sync_llm_error_skip_persist(temp_db_path, temp_message_store):
-    """E2 Task 4：/chat/sync LLM_ERROR 分支 skip persist + message_id=None。
+async def test_chat_sync_llm_error_skip_persist(
+    temp_db_path, temp_message_store, monkeypatch,
+):
+    """E2 Task 4 + P3 §4.6：/chat/sync 走共享 `persist_run_outcome`，LLM_ERROR 仍 skip persist。
 
     - mock runner 返回 LLM_ERROR rv（agent_loop LLM_ERROR 语义：模型调用失败/用户 Stop）
     - 错误文本不得以 assistant 角色落库（E2-03/04 修复：LLM_ERROR 错误文本经 persist_agent_reply 兜底落库）
-    - 返回 message_id=None（返回处无条件读取——不初始化则 NameError 500）
+    - 返回 message_id=None（holder 的 message_id 在 skip persist 分支保持 None）
     - reply 正常返回源头友好文案（LLM_ERROR 分支不做二次 format/不改变回复）
     """
     user_input = "你好"
@@ -91,6 +95,7 @@ async def test_chat_sync_llm_error_skip_persist(temp_db_path, temp_message_store
 
     # ---- 构造 FastAPI app ----
     from fastapi import FastAPI
+    from p2b_fakes import FakeRuntime, main_loop_thread
 
     import agent.session as session_module
     from niu_api.chat import router as chat_router
@@ -98,27 +103,24 @@ async def test_chat_sync_llm_error_skip_persist(temp_db_path, temp_message_store
     app = FastAPI()
     app.include_router(chat_router)
 
+    # D-8：端点取 runtime 的唯一入口 —— 注入替身（I-2：端点不再取锁/不再 runner.chat）
+    runtime = FakeRuntime(runner=mock_runner)
+    monkeypatch.setattr("agent.main_runtime.get_main_runtime", lambda: runtime)
+    monkeypatch.setattr("niu_api.chat.get_or_create_runner", lambda: mock_runner)
+    monkeypatch.setattr("niu_api.chat._load_llm_config", lambda: {
+        "type": "openai",
+        "apikey": "test-api-key",
+        "apibase": "https://api.example.com",
+        "model": "test-model",
+    })
+    monkeypatch.setattr("niu_api.chat.notify_new_message", AsyncMock())
+
     # 保存原始全局 store，测试后恢复
     original_store = session_module._message_store
     session_module._message_store = temp_message_store
 
     try:
-        with (
-            patch("niu_api.chat.get_or_create_runner", return_value=mock_runner),
-            patch("niu_api.chat._load_llm_config", return_value={
-                "type": "openai",
-                "apikey": "test-api-key",
-                "apibase": "https://api.example.com",
-                "model": "test-model",
-            }),
-            patch("niu_api.chat.notify_new_message", new_callable=AsyncMock),
-            # chat_sync 函数内局部导入 agent.context_manager.get_context_manager → patch 源模块
-            patch("agent.context_manager.get_context_manager", new_callable=AsyncMock) as mock_get_cm,
-        ):
-            mock_cm = Mock()
-            mock_cm.get_context_for_chat = AsyncMock(return_value=[])
-            mock_get_cm.return_value = mock_cm
-
+        with main_loop_thread():
             client = TestClient(app)
 
             # ---- 发送 /chat/sync 请求 ----
@@ -138,7 +140,13 @@ async def test_chat_sync_llm_error_skip_persist(temp_db_path, temp_message_store
             assert data["reply"] == reply_text, (
                 f"reply 应为源头友好文案 '{reply_text}'，实际: '{data['reply']}'"
             )
+
+        # D-5：/chat/sync 提交的是非流式命令，且本次 user 行 id 进 exclude_message_ids
+        assert len(runtime.commands) == 1
+        assert runtime.commands[0].stream is False
+        assert runtime.commands[0].exclude_message_ids
     finally:
+        runtime.stop()
         # 恢复全局 store
         session_module._message_store = original_store
 

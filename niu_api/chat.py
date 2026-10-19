@@ -6,6 +6,7 @@ Chat API endpoints
 
 import asyncio
 import json
+import threading
 from typing import Optional
 
 from agent.runner import NiuRunner, get_runner
@@ -15,7 +16,6 @@ from fastapi.responses import StreamingResponse
 from loguru import logger
 from pydantic import BaseModel, Field, field_validator
 
-from niu_api import chat_lock
 from niu_api.compat import _chat_lock
 from niu_api.internal.subagent_event_bus import subscribe, unsubscribe, has_subagent
 
@@ -634,7 +634,11 @@ def get_or_create_runner() -> Optional["NiuRunner"]:
 @router.post("/chat")
 async def chat(request: ChatRequest) -> StreamingResponse:
     """
-    [DEPRECATED] Main chat endpoint - 使用 NiuRunner 流式响应
+    Main chat endpoint (SSE) — P3 D-4：只提交 RunCommand + 转发 run 事件。
+
+    历史加载、`_chat_lock`、`runner.chat`、回复持久化全部归 MainAgentRuntime
+    （I-1/I-2）；本端点只做 user 行落库 + 有界 chunk 队列 + 终止槽（I-3），
+    客户端断连只退订、不取消 run（I-4）。
     """
     # 唤醒睡眠整理管道（Case 3 可打断，方案 §3.4）：本端点仅 Electron 前端直连调用
     # （无程序化流量入口，来源判据闭合），按契约视为 electron 来源 → 唤醒
@@ -648,122 +652,143 @@ async def chat(request: ChatRequest) -> StreamingResponse:
             status_code=400, detail="LLM not configured. Please set up API key first."
         )
 
-    runner = get_or_create_runner()
-
     # Get or create session
     session_id = request.session_id or "default"
 
-    # Stream response
     async def generate():
-        # 排队等待锁：压缩管道可能执行数分钟，必须等够
-        try:
-            await asyncio.wait_for(_chat_lock.acquire(), timeout=600.0)
-        except TimeoutError:
-            logger.warning("[/chat] _chat_lock 600s timeout, request rejected")
-            yield f"data: {json.dumps({'error': 'Another request is in progress, please wait'})}\n\n"
+        from agent.main_runtime import RunCommand, RunOutcome, get_main_runtime
+
+        from niu_api.main_agent_persist import (
+            NEUTRAL_REPLY,
+            make_on_complete,
+            persist_run_outcome,
+        )
+
+        runtime = get_main_runtime()
+        if runtime is None:
+            # D-8：无 runtime 单例（启动未完成/已停）→ 中性文案收尾，绝不顺手 instance() 拉线程
+            logger.warning("[/chat] main runtime unavailable, request rejected")
+            yield f"data: {json.dumps({'error': NEUTRAL_REPLY})}\n\n"
             yield f"data: {json.dumps({'done': True, 'session_id': session_id})}\n\n"
             return
 
-        sf = None  # P2-1：与 completion 同处前置初始化（与 /chat/sync 同构）
-        completion = None
-        try:
-            # Electron 用户消息 → 去 IM 标志（规则 2）：channel_id 清空 + force 清空
-            # 必须在 _chat_lock 内（对齐 /chat/sync）：排队等锁期间 scheduler 可能重臂 force，锁内清除才生效
-            # P2a 4.4：取锁成功后第一行即进入 try —— 取锁后任一早退（runner 缺失等）都必须走 finally，
-            # 否则 _chat_lock 永久持有
-            if runner is None:
-                # P2-4：runner 缺失（init 失败）→ 显式 SSE 错误收尾，不再靠 AttributeError 触发 finally；
-                # finally 仍以 completion=None 走 helper 立即释放锁
-                yield f"data: {json.dumps({'error': 'runner unavailable'})}\n\n"
-                yield f"data: {json.dumps({'done': True, 'session_id': session_id})}\n\n"
+        # I-5：user 行先落库并推 SSE，再提交命令；全部 id 作 exclude_message_ids
+        # （runtime 读历史必须排除本次 user 行）
+        store = await get_message_store()
+        user_msg_id = await store.add_message(role="user", content=request.message)
+        await notify_new_message(user_msg_id, "user", request.message, source="electron")
+        exclude_message_ids = [str(user_msg_id)]
+
+        # holder 是命令结果唯一出口：on_complete 写 reply/message_id（I-5）
+        holder: dict = {"reply": "", "message_id": None, "error": None}
+
+        def on_overflow() -> None:
+            # D-2：零参闭包——store/source 由本端点捕获，compaction 惰性取
+            from niu_api.chat import fire_and_forget_compaction
+            fire_and_forget_compaction(store, source="ChatSSE")
+
+        on_complete = make_on_complete(store, holder, on_overflow=on_overflow)
+
+        loop = asyncio.get_running_loop()
+        # D-4：chunk 走有界队列（满只丢 chunk）；done/error/cancelled 走独立槽 + Event（必达）
+        chunk_queue: asyncio.Queue = asyncio.Queue(maxsize=256)
+        terminal: dict = {}
+        terminal_ready = asyncio.Event()
+        # 断连退订标志：生成器 finally 写、sink 在 runtime 线程读（threading.Event 跨线程安全）
+        unsubscribed = threading.Event()
+
+        def offer(event: dict) -> None:
+            """主循环线程内投递：chunk 入队（满则丢），终止事件写槽并置位（I-3）。"""
+            etype = event.get("type")
+            if etype == "chunk":
+                content = event.get("content")
+                if not content:
+                    return
+                try:
+                    chunk_queue.put_nowait(content)
+                except asyncio.QueueFull:
+                    logger.warning("[/chat] SSE chunk queue full, chunk dropped")
+            elif etype in ("done", "error", "cancelled"):
+                if "type" not in terminal:  # 终止事件只认第一个，必达一次
+                    terminal["type"] = etype
+                    terminal["error"] = event.get("error")
+                    terminal_ready.set()
+
+        def sink(event: dict) -> None:
+            """D-3/R1：runtime 线程调用——只调度一次 call_soon_threadsafe，异常只记录。"""
+            if unsubscribed.is_set():
                 return
-            runner.set_im_channel("")
-            runner.set_im_force(False)
-
-            reply_chunks = []
-            stream_error = None
-
-            # Run streaming in executor thread, communicate chunks via queue
-            import queue as _queue
-
-            chunk_queue: _queue.Queue[str | None] = _queue.Queue()
-
-            def sync_stream():
-                nonlocal stream_error
-                gen = None
-                try:
-                    gen = runner.chat(session_id, request.message, stream=True)
-                    for chunk in gen:
-                        if chunk:
-                            chunk_queue.put(chunk)
-                except Exception as e:
-                    stream_error = str(e)
-                finally:
-                    # P2a D-5：显式 close 保证守卫令牌释放；close 异常单独捕获，不覆盖原异常
-                    if gen is not None:
-                        try:
-                            gen.close()
-                        except Exception:
-                            logger.exception("[/chat] close generator failed")
-                    chunk_queue.put(None)  # sentinel 不可被跳过
-
-            loop = asyncio.get_running_loop()
-            sf, completion = chat_lock.start_executor(loop, sync_stream)
-
-            # Drain queue in async context while executor produces chunks
-            while not sf.done() or not chunk_queue.empty():
-                try:
-                    chunk = chunk_queue.get_nowait()
-                except _queue.Empty:
-                    await asyncio.sleep(0.01)
-                    continue
-                if chunk is None:
-                    break
-                reply_chunks.append(chunk)
-                yield f"data: {json.dumps({'chunk': chunk})}\n\n"
-
-            # Ensure executor finished
             try:
-                await sf
-            except Exception as e:
-                stream_error = stream_error or str(e)
+                loop.call_soon_threadsafe(offer, event)
+            except Exception as exc:
+                logger.warning(f"[/chat] SSE event scheduling dropped: {exc}")
 
-            # Send error if streaming failed
-            if stream_error:
-                yield f"data: {json.dumps({'error': stream_error})}\n\n"
+        cmd = RunCommand(
+            content=request.message,
+            session_id=session_id,
+            source="user",
+            channel="electron",
+            stream=True,
+            exclude_message_ids=exclude_message_ids,
+            on_complete=on_complete,
+            on_event=sink,
+        )
+        try:
+            runtime.submit(cmd)
+        except Exception as exc:
+            # 命令从未执行（runtime 已停）→ 与 ChatQueue 一致：先在事件循环线程内直接落
+            # neutral_degrade 降级行（不走 on_complete——同线程 .result() 会自锁），
+            # 已写的 user 行不留孤立；再中性 error + 补 done 收尾（I-3）
+            logger.error(f"[/chat] submit failed: {exc}")
+            await persist_run_outcome(
+                store, RunOutcome(error=exc, neutral_degrade=True), holder,
+            )
+            yield f"data: {json.dumps({'error': holder.get('reply') or NEUTRAL_REPLY})}\n\n"
+            yield (
+                "data: "
+                f"{json.dumps({'done': True, 'session_id': session_id, 'message_id': holder.get('message_id')})}\n\n"
+            )
+            return
 
-            # 方案 A：stream_error 时不进 DB（避免错误文本被下一轮 _inject_dynamic_resources 当 query 反复查 lightrag）
-            # LLM_ERROR：agent_loop 返回 LLM_ERROR 时流式错误已通过 SSE 推给前端，
-            # partial content 不应持久化到 DB（避免错误文本被当作正常 assistant 消息）
-            full_reply = "".join(reply_chunks)
-            store = await get_message_store()
-            rv = getattr(runner, "last_return_value", None)
-            message_id = None
-            if stream_error:
-                logger.warning(f"[Chat SSE] Skipped persist due to stream_error: {stream_error}")
-            elif rv and isinstance(rv, dict) and rv.get("result") == "LLM_ERROR":
-                logger.warning(f"[Chat SSE] Skipped persist due to LLM_ERROR: {rv.get('error_msg', '')}")
-            else:
-                # 正常路径：持久化 Agent 回复（使用 persist_agent_reply 双管道）
-                history_len = 0  # /chat 端点不加载历史，rv 包含完整 messages
-                persisted_msgs = getattr(runner, "_persisted_msgs", None)  # V4: 已逐条持久化的消息
-                extracted_at_msgs = getattr(runner, "_extracted_at_msgs", None)  # 修正版方案：轮中提取的 subagent_msg（去重用）
-                message_id, full_reply = await persist_agent_reply(store, rv, history_len, full_reply, source="electron", persisted_msgs=persisted_msgs, extracted_at_msgs=extracted_at_msgs)
+        try:
+            while True:
+                get_chunk = asyncio.create_task(chunk_queue.get())
+                wait_terminal = asyncio.create_task(terminal_ready.wait())
+                try:
+                    finished, _unfinished = await asyncio.wait(
+                        {get_chunk, wait_terminal},
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
 
-            # 检测主 Agent 上下文溢出 → fire-and-forget 机械压实（Task 3 收编，替代 force 投递）
-            if rv and isinstance(rv, dict) and rv.get("result") == "CONTEXT_OVERFLOW":
-                overflow_data = rv.get("data", {})
-                logger.warning(
-                    f"[Chat SSE] Main agent CONTEXT_OVERFLOW at {overflow_data.get('tokens_used', 0)} tokens, "
-                    f"running mechanical compaction (fire-and-forget)"
-                )
-                fire_and_forget_compaction(store, source="ChatSSE")
-            # Send final message
-            yield f"data: {json.dumps({'done': True, 'session_id': session_id, 'message_id': message_id})}\n\n"
+                    # 先排空 chunk：终止事件先到也不得让已产出的 chunk 悬挂
+                    if get_chunk in finished:
+                        yield f"data: {json.dumps({'chunk': get_chunk.result()})}\n\n"
+                    while True:
+                        try:
+                            chunk = chunk_queue.get_nowait()
+                        except asyncio.QueueEmpty:
+                            break
+                        yield f"data: {json.dumps({'chunk': chunk})}\n\n"
+
+                    # 再收口：error → error 帧 + 补 done；cancelled → done（前端不悬挂）
+                    if wait_terminal in finished:
+                        if terminal.get("type") == "error":
+                            # 口径与 DB 一致：on_complete 先于终止事件，holder 已写好中性/友好
+                            # 文案——绝不把 str(outcome.error) 原文转发给前端
+                            error_text = holder.get("reply") or NEUTRAL_REPLY
+                            yield f"data: {json.dumps({'error': error_text})}\n\n"
+                        yield (
+                            "data: "
+                            f"{json.dumps({'done': True, 'session_id': session_id, 'message_id': holder.get('message_id')})}\n\n"
+                        )
+                        return
+                finally:
+                    for pending in (get_chunk, wait_terminal):
+                        if not pending.done():
+                            pending.cancel()
         finally:
-            # P2a D-7：锁持有到 worker 真正结束（concurrent completion done）才释放；
-            # pending 时 helper 置停止标志并挂 done 回调，watchdog 只记录不释放（D-9）
-            chat_lock.release_chat_lock_when_done(completion, _chat_lock)
+            # I-4：断连只退订（sink 见标志不再调度），不 handle.cancel()——run 继续、照常落库
+            unsubscribed.set()
 
     return StreamingResponse(
         generate(),
@@ -794,95 +819,67 @@ async def chat_sync(request: ChatRequest) -> ChatResponse:
             status_code=400, detail="LLM not configured. Please set up API key first."
         )
 
-    # 排队等待锁：压缩管道可能执行数分钟，必须等够
-    # 锁获取后立即进入 try/finally，确保 CancelledError 不会导致锁泄漏
+    from agent.main_runtime import RunCommand, RunOutcome, get_main_runtime
+
+    from niu_api.main_agent_persist import (
+        NEUTRAL_REPLY,
+        make_on_complete,
+        persist_run_outcome,
+    )
+
+    session_id = request.session_id or "default"
+
+    runtime = get_main_runtime()
+    if runtime is None:
+        # D-8：无 runtime 单例（启动未完成/已停）→ HTTP 200 中性文案，不顺手 instance() 拉线程
+        logger.warning("[/chat/sync] main runtime unavailable, request rejected")
+        return ChatResponse(session_id=session_id, reply=NEUTRAL_REPLY, message_id=None)
+
+    # I-5：user 行先落库并推 SSE，再提交命令；全部 id 作 exclude_message_ids
+    # （runtime 读历史必须排除本次 user 行）
+    store = await get_message_store()
+    user_msg_id = await store.add_message(role="user", content=request.message)
+    # /chat/sync 当前只被 Electron 前端调用（scheduler 已走 ChatQueue 入队）
+    await notify_new_message(user_msg_id, "user", request.message, source="electron")
+    exclude_message_ids = [str(user_msg_id)]
+
+    # holder 是命令结果唯一出口：on_complete 写 reply/message_id（I-5）
+    holder: dict = {"reply": "", "message_id": None, "error": None}
+
+    def on_overflow() -> None:
+        # D-2：零参闭包——store/source 由本端点捕获，compaction 惰性取
+        from niu_api.chat import fire_and_forget_compaction
+        fire_and_forget_compaction(store, source="ChatSync")
+
+    cmd = RunCommand(
+        content=request.message,
+        session_id=session_id,
+        source="user",
+        channel="electron",
+        stream=False,
+        exclude_message_ids=exclude_message_ids,
+        on_complete=make_on_complete(store, holder, on_overflow=on_overflow),
+    )
     try:
-        await asyncio.wait_for(_chat_lock.acquire(), timeout=600.0)
-    except TimeoutError:
-        logger.warning("[/chat/sync] _chat_lock 600s timeout, request rejected")
-        raise HTTPException(
-            status_code=503, detail="Another request is in progress, please try again later."
-        ) from None
+        handle = runtime.submit(cmd)
+    except Exception as exc:
+        # 命令从未执行（runtime 已停）→ 与 ChatQueue 一致：先落中性降级行（不留孤立
+        # user 行），再返回中性文案
+        logger.error(f"[/chat/sync] submit failed: {exc}")
+        await persist_run_outcome(store, RunOutcome(error=exc, neutral_degrade=True), holder)
+        return ChatResponse(
+            session_id=session_id,
+            reply=holder["reply"] or NEUTRAL_REPLY,
+            message_id=holder["message_id"],
+        )
 
-    # P2a 4.4：completion/sf 前置初始化 —— 取锁后、进入 try 前任一失败，外层 finally 都有定义
-    sf = None
-    completion = None
-
-    try:
-        # Persist user message to database
-        store = await get_message_store()
-        user_msg_id = await store.add_message(role="user", content=request.message)
-        # /chat/sync 当前只被 Electron 前端调用（scheduler 已走 ChatQueue 入队）
-        await notify_new_message(user_msg_id, "user", request.message, source="electron")
-
-        # Load conversation history via ContextManager (same as /api/chat/session)
-        from agent.context_manager import get_context_manager
-
-        context_manager = await get_context_manager(store)
-        history_for_runner = await context_manager.get_context_for_chat(exclude_last=True)
-
-        runner = get_or_create_runner()
-        runner.set_im_channel("")
-        runner.set_im_force(False)  # Electron 用户消息转假（规则 2 + 粘性清除）——与 compat/chat_queue electron 分支对齐
-        session_id = request.session_id or "default"
-
-        # Run chat (non-streaming)
-        def sync_chat():
-            full_reply = ""
-            gen = None
-            try:
-                gen = runner.chat(session_id, request.message, stream=True, history=history_for_runner)
-                for chunk in gen:
-                    full_reply += chunk
-            finally:
-                # P2a D-5：显式 close 保证守卫令牌释放；close 异常单独捕获，不覆盖原异常
-                if gen is not None:
-                    try:
-                        gen.close()
-                    except Exception:
-                        logger.exception("[/chat/sync] close generator failed")
-            return full_reply
-
-        chat_error = None
-        try:
-            loop = asyncio.get_running_loop()
-            sf, completion = chat_lock.start_executor(loop, sync_chat)
-            full_reply = await sf
-        except Exception as e:
-            import traceback
-            logger.error(f"Chat sync error: {e}\n{traceback.format_exc()}")
-            chat_error = str(e)
-            full_reply = f"Error: {str(e)}"
-
-        # 方案 A：异常时不进 DB（避免错误文本被下一轮 _inject_dynamic_resources 当 query 反复查 lightrag）
-        # LLM_ERROR：agent_loop 返回 LLM_ERROR 时错误文本不落库（E2 用户拍板"不写 DB"——刷新 Chat 从 DB 加载历史时自然消失）
-        rv = getattr(runner, "last_return_value", None)
-        message_id = None  # E2 显式初始化：返回处无条件读取（对齐 /chat SSE 模式），LLM_ERROR skip persist 后保持 None
-        if chat_error is None:
-            # 持久化 Agent 回复（使用 persist_agent_reply 双管道）
-            if rv and isinstance(rv, dict) and rv.get("result") == "LLM_ERROR":
-                # E2：LLM_ERROR 分支 skip persist——显式守卫（对齐 compat）：rv=None（用户 Stop 等）时防 None.get AttributeError
-                logger.warning(f"[Chat Sync] Skipped persist due to LLM_ERROR: {rv.get('error_msg', '')}")
-            else:
-                history_len = len(history_for_runner) if history_for_runner else 0
-                persisted_msgs = getattr(runner, "_persisted_msgs", None)  # V4: 已逐条持久化的消息
-                extracted_at_msgs = getattr(runner, "_extracted_at_msgs", None)  # 修正版方案：轮中提取的 subagent_msg（去重用）
-                message_id, full_reply = await persist_agent_reply(store, rv, history_len, full_reply, source="electron", persisted_msgs=persisted_msgs, extracted_at_msgs=extracted_at_msgs)
-        else:
-            logger.warning(f"[Chat Sync] Skipped persist due to chat error: {chat_error}")
-
-        # 检测主 Agent 上下文溢出 → fire-and-forget 机械压实（Task 3 收编，替代 force 投递）
-        if rv and isinstance(rv, dict) and rv.get("result") == "CONTEXT_OVERFLOW":
-            overflow_data = rv.get("data", {})
-            logger.warning(
-                f"[Chat] Main agent CONTEXT_OVERFLOW at {overflow_data.get('tokens_used', 0)} tokens, "
-                f"running mechanical compaction (fire-and-forget)"
-            )
-            fire_and_forget_compaction(store, source="ChatSync")
-        return ChatResponse(session_id=session_id, reply=full_reply, message_id=message_id)
-    finally:
-        # P2a D-7：锁持有到 worker 真正结束（completion done）才释放
-        chat_lock.release_chat_lock_when_done(completion, _chat_lock)
+    # D-5：与 ChatQueue 一致，不设外层超时（先返回会让 on_complete 稍后落真回复 → 双回复）
+    await asyncio.to_thread(handle.wait)
+    return ChatResponse(
+        session_id=session_id,
+        reply=holder["reply"] or NEUTRAL_REPLY,
+        message_id=holder["message_id"],
+    )
 
 
 @router.get("/api/events/stream")

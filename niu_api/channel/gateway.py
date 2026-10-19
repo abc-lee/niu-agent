@@ -534,7 +534,7 @@ def set_im_gateway(gw: IMGateway):
     _gateway = gw
 
 
-async def push_im_reply(runner, reply: str) -> bool:
+async def push_im_reply(runner, reply: str, snapshot: dict | None = None) -> bool:
     """会话结束 IM 投递统一入口（async，供 chat_session 调用）。
 
     返回 bool：True=已尝试投递（网络层失败由 gateway 静默容忍）；False=无 IM 上下文不投递。
@@ -542,14 +542,23 @@ async def push_im_reply(runner, reply: str) -> bool:
     - _im_channel_id 非空 → route_out → SEND（终结卡片，既有行为）
     - _im_channel_id 空（force-only）→ send_sync("", reply) → SEND（终结卡片，与分支 2 逐字对齐）
       gateway 未连接/None → 回退 router.push 独立消息（无卡可终结，对齐现状 PUSH 语义）
+
+    snapshot（P3 D-6）：chat_session 在 on_complete（持 `_chat_lock`、handle 收口前）
+    快照的 {"should_push_im": bool, "im_channel_id": str}。有快照只读快照——wait 之后
+    runner 标志可能已被下一条命令改写；无快照（ChatQueue 等旧调用点）回退 runner 现读。
     """
-    if not runner.should_push_im():
+    if snapshot is not None:
+        should_push = bool(snapshot.get("should_push_im"))
+        im_cid = snapshot.get("im_channel_id") or ""
+    else:
+        should_push = bool(runner.should_push_im())
+        im_cid = runner.get_im_channel()
+    if not should_push:
         return False
     from niu_api.channel import get_channel_router
     router = get_channel_router()
     if not router.has_channel("im"):
         return False
-    im_cid = runner.get_im_channel()
     if im_cid:
         await router.route_out(reply, "im", im_cid)
         return True

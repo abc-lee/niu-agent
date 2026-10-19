@@ -37,6 +37,8 @@ class FakeHandle:
         self._stop_latched = False
         self._finished = False
         self._lock = threading.Lock()
+        # D-3：与 `RunHandle._events` 同语义——记录已投递的 run 事件，供用例断言
+        self.events: list[dict] = []
 
     def wait(self, timeout: float | None = None) -> str | None:
         if not self._done.wait(timeout):
@@ -47,6 +49,20 @@ class FakeHandle:
         self._stop_latched = True
         if self._runtime is not None:
             self._runtime.cancel_active()
+
+    def _emit(self, event: dict) -> None:
+        """`RunHandle._emit` 等价：先记录事件，**出锁后**再调 `command.on_event`（D-3）。
+
+        sink 抛错只记录，不影响 run（R1）——与生产 `_emit` 的捕获一致。
+        """
+        self.events.append(event)
+        sink = self.command.on_event
+        if sink is None:
+            return
+        try:
+            sink(event)
+        except Exception:
+            logger.exception("[FakeRuntime] on_event sink failed")
 
     def _finish(self, result: str | None, error: str | None) -> None:
         with self._lock:
@@ -66,7 +82,9 @@ class FakeRuntime:
     - `lock_error` 非 None → 复刻 `_chat_lock` 获取失败：不调 `runner.chat`，
       直接产出 `RunOutcome(error=lock_error)`；
     - `on_complete` 在 runtime 线程内、handle 收口前调用（D-5）；
-    - `commands` / `outcomes` 记录提交与产出，供用例断言命令字段。
+    - `commands` / `handles` / `outcomes` 记录提交与产出，供用例断言命令字段；
+    - run 事件（chunk / done / error / cancelled）经 `handle._emit` 投递，次序与
+      生产 `_finish_handle` 一致：先 chunk，再恰好一个终止事件（D-3）。
     """
 
     def __init__(self, runner=None, history: list | None = None,
@@ -76,6 +94,7 @@ class FakeRuntime:
         self.lock_error = lock_error
         self.commands: list[RunCommand] = []
         self.outcomes: list[RunOutcome] = []
+        self.handles: list[FakeHandle] = []
         self._queue: queue.Queue = queue.Queue()
         self._thread: threading.Thread | None = None
         self._running = False
@@ -114,6 +133,23 @@ class FakeRuntime:
         with self._state_lock:
             return self._active is not None or bool(self._pending)
 
+    def is_round_active(self) -> bool:
+        """`MainAgentRuntime.is_round_active` 等价（I-6）：active 命令，或 `_chat_lock`
+        被持有（compat `/compact`、`/clear`）；pending 不算。`_chat_lock` 惰性 import，
+        取不到时只回 active——测试把 `niu_api.compat._chat_lock` 换成假锁即可覆盖持锁分支。
+        """
+        with self._state_lock:
+            active = self._active is not None
+        try:
+            from niu_api.compat import _chat_lock
+        except Exception:
+            return active
+        try:
+            return active or _chat_lock.locked()
+        except Exception:
+            return active
+
+
     def cancel_active(self) -> None:
         with self._state_lock:
             active = self._active
@@ -129,6 +165,7 @@ class FakeRuntime:
             if self._stopped:
                 raise RuntimeError("fake runtime is stopped")
             self.commands.append(command)
+            self.handles.append(handle)
             self._pending.add(handle)
             self._queue.put((command, handle))
             self._ensure_thread()
@@ -207,6 +244,7 @@ class FakeRuntime:
                     pumped = True
                     if chunk:
                         chunks.append(chunk)
+                        handle._emit({"type": "chunk", "id": handle.id, "content": chunk})
                         advanced = True
             except BaseException as exc:
                 outcome = RunOutcome(error=exc)
@@ -253,11 +291,15 @@ class FakeRuntime:
 
     @staticmethod
     def _finish_handle(handle: FakeHandle, outcome: RunOutcome) -> None:
+        """终止事件与收口：与生产 `_finish_handle` 同映射（D-3 / I-3）。"""
         if outcome.cancelled:
+            handle._emit({"type": "cancelled", "id": handle.id, "error": "cancelled"})
             handle._finish(None, "cancelled")
         elif outcome.error is not None:
+            handle._emit({"type": "error", "id": handle.id, "error": str(outcome.error)})
             handle._finish(None, str(outcome.error))
         else:
+            handle._emit({"type": "done", "id": handle.id})
             handle._finish(outcome.result, None)
 
 
