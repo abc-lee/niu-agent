@@ -33,6 +33,12 @@
 - **验证**：点名 103–174 passed 多次；全量 **4747 passed / 36 failed / 179 skipped**；36 = 干净 HEAD 的 34 既存 + 2 个 `test_response_format_probe` 连接拒绝（clean HEAD 复现，环境）；最终实施 A/B 复核无 P1，两条 P2 为回归锁/台账缺口。
 - **后续**：P3 前端三端点提交命令 + SSE 有界队列；P4 审计/真机。
 
+#### P3：前端三端点迁移 + SSE 有界队列（main `6dfe8d3d`）
+
+- **实现**：`/chat`、`/chat/sync`、`compat /chat/session` 只提交 `RunCommand`；共享 `niu_api/main_agent_persist.py`（`persist_run_outcome` + `make_on_complete`，holder 写 message_id/error）；`RunCommand.on_event` sink（`_emit` 锁外调用）；`/chat` 有界 chunk 队列 + 独立 terminal 槽（done/error/cancelled 必达，error→error+done、cancelled→done，断连只退订）；`is_round_active`（active 或持锁）、`channel=="inherit"`、gateway `push_im_reply(snapshot=holder)`；submit 失败也落中性降级行。
+- **验证**：点名 118 passed（端点/SSE/队列/runtime）；未跑全量（用户明确禁止）。KG 核查：`~/.niu/lightrag_storage` 文件 mtime 15:29，今日测试未写；`锁顺序自检测试` 节点来自 12:49 Niu 会话自检，不是 pytest 注入。
+- **后续**：P4 调用点清零/死模块（`niu_api/chat_lock.py` 已无生产 import）/真机验收。
+
 ### 2026-10-17
 
 #### 小工程 F-4：媒体队列遇「文件已不存在」——不重试、不报 RuntimeError、归因如实（方案 R1–R3 → T1 双阶段审查 → 真机 AC 全过）
