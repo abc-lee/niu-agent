@@ -23,6 +23,7 @@ from agent.subagent import (
 from fastapi import APIRouter, Request
 from loguru import logger
 from pydantic import BaseModel
+from niu_api import chat_lock
 
 # 精灵（spirit）睡眠状态通道：Electron 主进程状态转换时转发（main.js spirit-state），
 # tidy mode='sleep' 时冗余置位。整理管道 sleep 状态机（CP0-CP3）读取。
@@ -1994,6 +1995,10 @@ async def chat_session(request: ChatRequest) -> ChatResponse:
         logger.warning("[chat_session] _chat_lock 600s timeout, request rejected")
         return ChatResponse(reply="系统正忙，请稍后再试", session_id="default")
 
+    # P2a 4.4：completion/sf 前置初始化 —— 取锁后、进入 try 前任一失败，外层 finally 都有定义
+    sf = None
+    completion = None
+
     try:
         # Get message store
         store = await get_message_store()
@@ -2032,16 +2037,28 @@ async def chat_session(request: ChatRequest) -> ChatResponse:
             runner.set_im_channel("")
             runner.set_im_force(False)  # Electron 用户消息转假（规则 2 + 粘性清除）
 
-        # Run chat using asyncio.to_thread to avoid blocking event loop
+        # Run chat in the default executor to avoid blocking the event loop
         def sync_chat():
             chunks = []
-            for chunk in runner.chat(session_id, request.message, stream=False, history=history_for_runner, resources=request.resources or None, channel_id=runner.get_im_channel()):
-                chunks.append(chunk)
+            gen = None
+            try:
+                gen = runner.chat(session_id, request.message, stream=False, history=history_for_runner, resources=request.resources or None, channel_id=runner.get_im_channel())
+                for chunk in gen:
+                    chunks.append(chunk)
+            finally:
+                # P2a D-5：显式 close 保证守卫令牌释放；close 异常单独捕获，不覆盖原异常
+                if gen is not None:
+                    try:
+                        gen.close()
+                    except Exception:
+                        logger.exception("[chat_session] close generator failed")
             return "".join(chunks)
 
         chat_error = None
         try:
-            full_reply = await asyncio.to_thread(sync_chat)
+            loop = asyncio.get_running_loop()
+            sf, completion = chat_lock.start_executor(loop, sync_chat)
+            full_reply = await sf
         except Exception as e:
             import traceback
             logger.error(f"Chat error: {e}\n{traceback.format_exc()}")
@@ -2093,10 +2110,11 @@ async def chat_session(request: ChatRequest) -> ChatResponse:
             from niu_api.chat import fire_and_forget_compaction
             fire_and_forget_compaction(store, source="ChatSession")
     finally:
-        from agent.runner import clear_stop, drain_supplements
-        clear_stop()  # 防御性清除：确保停止标志不残留
+        from agent.runner import drain_supplements
         drain_supplements()  # 清理残留补充消息，防止被 ChatQueue 路径读取
-        _chat_lock.release()
+        # P2a 4.4：不再显式 clear_stop / 裸 release —— helper 内部 clear_stop 先于 release，
+        # 且锁持有到 worker 真正结束（completion done）才释放
+        chat_lock.release_chat_lock_when_done(completion, _chat_lock)
 
     # IM 推送在锁释放后执行（与 ChatQueue 模式一致，避免网络 I/O 阻塞锁）
     # 统一入口 push_im_reply：should_push_im 闸门在函数内；channel_id 非空 → route_out(SEND)；

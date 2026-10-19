@@ -12,6 +12,8 @@ from agent.runner import NiuRunner
 from agent.session import get_message_store
 from loguru import logger
 
+from niu_api import chat_lock
+
 
 def _classify_degraded_reason(chat_error) -> str:
     """E4-12：降级回复错误类别——"timeout" | "internal"（DB 可追溯标记）。
@@ -348,13 +350,11 @@ class ChatQueue:
         """处理单条消息 — 加载历史，持久化 user 消息，调用 runner.chat()，持久化回复，SSE推送"""
         from agent.runner import clear_stop, is_stop_requested
 
-        # 如果停止标志仍被设置，说明前一个 Agent 还未退出或标志残留
-        # 残留标志：清除并继续；用户新设置的：不应该处理新消息
-        if is_stop_requested():
-            # 标志可能残留（Agent 退出后未被清除）
-            # 清除残留标志，继续处理
-            logger.info("[ChatQueue] Clearing residual stop flag before processing")
-            clear_stop()
+        # P2a 4.4：acquired/sf/completion 前置初始化 —— 外层 try 之前的 await 失败时，
+        # 外层 finally 引用的变量也必须有定义
+        acquired = False
+        sf = None
+        completion = None
 
         try:
             from niu_api.compat import _chat_lock
@@ -387,16 +387,31 @@ class ChatQueue:
             # NiuRunner.chat(session_id, user_input, stream=False, history=...)
             def sync_chat():
                 chunks = []
-                for chunk in self._runner.chat(session_id, content, stream=False, history=history_for_runner, channel_id=channel_id):
-                    chunks.append(chunk)
+                gen = None
+                try:
+                    gen = self._runner.chat(session_id, content, stream=False, history=history_for_runner, channel_id=channel_id)
+                    for chunk in gen:
+                        chunks.append(chunk)
+                finally:
+                    # P2a D-5：显式 close 保证守卫令牌释放；close 异常单独捕获，不覆盖原异常
+                    if gen is not None:
+                        try:
+                            gen.close()
+                        except Exception:
+                            logger.exception("[ChatQueue] close generator failed")
                 return "".join(chunks)
 
-            acquired = False
             chat_error = None
             try:
                 acquired = await asyncio.wait_for(_chat_lock.acquire(), timeout=600.0)
                 if not acquired:
                     raise TimeoutError("Timeout waiting for chat lock")
+                # D-8：残留停止标志清理移到取锁之后 —— 等锁期间不触碰停止标志
+                # （防在僵尸 run 仍在跑时抹掉用户 request_stop）
+                if is_stop_requested():
+                    logger.info("[ChatQueue] Clearing residual stop flag after acquiring chat lock")
+                    clear_stop()
+
                 if channel == "electron":
                     self._runner.set_im_channel("")
                     self._runner.set_im_force(False)
@@ -411,7 +426,9 @@ class ChatQueue:
                 prev_source = getattr(self._runner, "_request_source", "user")
                 self._runner._request_source = _norm_source
                 try:
-                    full_reply = await asyncio.get_running_loop().run_in_executor(None, sync_chat)
+                    loop = asyncio.get_running_loop()
+                    sf, completion = chat_lock.start_executor(loop, sync_chat)
+                    full_reply = await sf
                 finally:
                     self._runner._request_source = prev_source
             except TimeoutError:
@@ -424,7 +441,8 @@ class ChatQueue:
                 full_reply = f"处理消息时出错：{str(e)}"
             finally:
                 if acquired:
-                    _chat_lock.release()
+                    # P2a D-7：锁持有到 worker 真正结束（completion done）才释放
+                    chat_lock.release_chat_lock_when_done(completion, _chat_lock)
 
             # 方案 A：异常时不进 DB（避免错误文本被下一轮 _inject_dynamic_resources 当 query 反复查 lightrag）
             rv = getattr(self._runner, "last_return_value", None)
@@ -490,8 +508,9 @@ class ChatQueue:
 
             return full_reply
         finally:
-            # 防御性清除：确保停止标志不残留（与 chat_session 的 finally 对齐）
-            if is_stop_requested():
+            # I-7：外层兜底收窄——仅「持有过锁且 completion 已完成」时清残留停止标志；
+            # 等锁期间 / completion 未结束（worker 仍在跑）都不触碰停止标志
+            if acquired and (completion is None or completion.done()) and is_stop_requested():
                 clear_stop()
 
 

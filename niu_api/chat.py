@@ -15,8 +15,9 @@ from fastapi.responses import StreamingResponse
 from loguru import logger
 from pydantic import BaseModel, Field, field_validator
 
-from niu_api.internal.subagent_event_bus import subscribe, unsubscribe, has_subagent
+from niu_api import chat_lock
 from niu_api.compat import _chat_lock
+from niu_api.internal.subagent_event_bus import subscribe, unsubscribe, has_subagent
 
 router = APIRouter(tags=["chat"])
 
@@ -663,12 +664,22 @@ async def chat(request: ChatRequest) -> StreamingResponse:
             yield f"data: {json.dumps({'done': True, 'session_id': session_id})}\n\n"
             return
 
-        # Electron 用户消息 → 去 IM 标志（规则 2）：channel_id 清空 + force 清空
-        # 必须在 _chat_lock 内（对齐 /chat/sync）：排队等锁期间 scheduler 可能重臂 force，锁内清除才生效
-        runner.set_im_channel("")
-        runner.set_im_force(False)
-
+        sf = None  # P2-1：与 completion 同处前置初始化（与 /chat/sync 同构）
+        completion = None
         try:
+            # Electron 用户消息 → 去 IM 标志（规则 2）：channel_id 清空 + force 清空
+            # 必须在 _chat_lock 内（对齐 /chat/sync）：排队等锁期间 scheduler 可能重臂 force，锁内清除才生效
+            # P2a 4.4：取锁成功后第一行即进入 try —— 取锁后任一早退（runner 缺失等）都必须走 finally，
+            # 否则 _chat_lock 永久持有
+            if runner is None:
+                # P2-4：runner 缺失（init 失败）→ 显式 SSE 错误收尾，不再靠 AttributeError 触发 finally；
+                # finally 仍以 completion=None 走 helper 立即释放锁
+                yield f"data: {json.dumps({'error': 'runner unavailable'})}\n\n"
+                yield f"data: {json.dumps({'done': True, 'session_id': session_id})}\n\n"
+                return
+            runner.set_im_channel("")
+            runner.set_im_force(False)
+
             reply_chunks = []
             stream_error = None
 
@@ -679,20 +690,28 @@ async def chat(request: ChatRequest) -> StreamingResponse:
 
             def sync_stream():
                 nonlocal stream_error
+                gen = None
                 try:
-                    for chunk in runner.chat(session_id, request.message, stream=True):
+                    gen = runner.chat(session_id, request.message, stream=True)
+                    for chunk in gen:
                         if chunk:
                             chunk_queue.put(chunk)
                 except Exception as e:
                     stream_error = str(e)
                 finally:
-                    chunk_queue.put(None)  # sentinel
+                    # P2a D-5：显式 close 保证守卫令牌释放；close 异常单独捕获，不覆盖原异常
+                    if gen is not None:
+                        try:
+                            gen.close()
+                        except Exception:
+                            logger.exception("[/chat] close generator failed")
+                    chunk_queue.put(None)  # sentinel 不可被跳过
 
             loop = asyncio.get_running_loop()
-            stream_future = loop.run_in_executor(None, sync_stream)
+            sf, completion = chat_lock.start_executor(loop, sync_stream)
 
             # Drain queue in async context while executor produces chunks
-            while not stream_future.done() or not chunk_queue.empty():
+            while not sf.done() or not chunk_queue.empty():
                 try:
                     chunk = chunk_queue.get_nowait()
                 except _queue.Empty:
@@ -705,7 +724,7 @@ async def chat(request: ChatRequest) -> StreamingResponse:
 
             # Ensure executor finished
             try:
-                await stream_future
+                await sf
             except Exception as e:
                 stream_error = stream_error or str(e)
 
@@ -742,18 +761,9 @@ async def chat(request: ChatRequest) -> StreamingResponse:
             # Send final message
             yield f"data: {json.dumps({'done': True, 'session_id': session_id, 'message_id': message_id})}\n\n"
         finally:
-            # 确保执行器线程完成后再释放锁，防止 runner.chat() 并发
-            # 注意：finally 块中的 await 可能被 CancelledError（BaseException）中断，
-            # 必须用嵌套 try/finally 保证 _chat_lock.release() 始终执行
-            try:
-                sf = locals().get("stream_future")
-                if sf and not sf.done():
-                    try:
-                        await asyncio.wait_for(sf, timeout=30.0)
-                    except (TimeoutError, asyncio.CancelledError, Exception):
-                        logger.warning("[/chat] Executor thread did not finish after client disconnect")
-            finally:
-                _chat_lock.release()
+            # P2a D-7：锁持有到 worker 真正结束（concurrent completion done）才释放；
+            # pending 时 helper 置停止标志并挂 done 回调，watchdog 只记录不释放（D-9）
+            chat_lock.release_chat_lock_when_done(completion, _chat_lock)
 
     return StreamingResponse(
         generate(),
@@ -794,6 +804,10 @@ async def chat_sync(request: ChatRequest) -> ChatResponse:
             status_code=503, detail="Another request is in progress, please try again later."
         ) from None
 
+    # P2a 4.4：completion/sf 前置初始化 —— 取锁后、进入 try 前任一失败，外层 finally 都有定义
+    sf = None
+    completion = None
+
     try:
         # Persist user message to database
         store = await get_message_store()
@@ -815,14 +829,25 @@ async def chat_sync(request: ChatRequest) -> ChatResponse:
         # Run chat (non-streaming)
         def sync_chat():
             full_reply = ""
-            for chunk in runner.chat(session_id, request.message, stream=True, history=history_for_runner):
-                full_reply += chunk
+            gen = None
+            try:
+                gen = runner.chat(session_id, request.message, stream=True, history=history_for_runner)
+                for chunk in gen:
+                    full_reply += chunk
+            finally:
+                # P2a D-5：显式 close 保证守卫令牌释放；close 异常单独捕获，不覆盖原异常
+                if gen is not None:
+                    try:
+                        gen.close()
+                    except Exception:
+                        logger.exception("[/chat/sync] close generator failed")
             return full_reply
 
         chat_error = None
         try:
             loop = asyncio.get_running_loop()
-            full_reply = await loop.run_in_executor(None, sync_chat)
+            sf, completion = chat_lock.start_executor(loop, sync_chat)
+            full_reply = await sf
         except Exception as e:
             import traceback
             logger.error(f"Chat sync error: {e}\n{traceback.format_exc()}")
@@ -856,7 +881,8 @@ async def chat_sync(request: ChatRequest) -> ChatResponse:
             fire_and_forget_compaction(store, source="ChatSync")
         return ChatResponse(session_id=session_id, reply=full_reply, message_id=message_id)
     finally:
-        _chat_lock.release()
+        # P2a D-7：锁持有到 worker 真正结束（completion done）才释放
+        chat_lock.release_chat_lock_when_done(completion, _chat_lock)
 
 
 @router.get("/api/events/stream")

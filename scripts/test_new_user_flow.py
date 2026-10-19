@@ -29,8 +29,18 @@ async def simulate_user_flow():
 
     def send_message(msg):
         chunks = []
-        for chunk in runner.chat("default", msg, stream=False):
-            chunks.append(chunk)
+        gen = None
+        try:
+            gen = runner.chat("default", msg, stream=False)
+            for chunk in gen:
+                chunks.append(chunk)
+        finally:
+            # P2a D-5：显式 close 保证守卫令牌释放
+            if gen is not None:
+                try:
+                    gen.close()
+                except Exception as e:
+                    print(f"   [warn] close generator failed: {e}")
         return "".join(chunks)
 
     reply1 = await asyncio.to_thread(send_message, "你好")

@@ -266,3 +266,21 @@ def _isolate_import_time_niu_paths(tmp_path, monkeypatch):
         if mod is not None and hasattr(mod, attr):
             monkeypatch.setattr(mod, attr, value)
     yield
+
+
+@pytest.fixture(autouse=True)
+def _reset_main_agent_owner():
+    """主 Agent 守卫全局态隔离：每个用例前后把 `agent.runner._active_main_owner` 置 None。
+
+    守卫是进程级全局（P2a I-1）：某用例泄漏 owner（异常路径未释放）会让后续用例
+    被误拒。前置清一次防上游泄漏，后置清一次防本用例污染下游。
+    只经 `sys.modules` 取已导入的模块——不在 fixture 里主动 import agent.runner，
+    避免改变其它用例的 import 时机。
+    """
+    mod = sys.modules.get("agent.runner")
+    if mod is not None:
+        mod._active_main_owner = None
+    yield
+    mod = sys.modules.get("agent.runner")
+    if mod is not None:
+        mod._active_main_owner = None
