@@ -8,6 +8,23 @@
 
 ---
 
+### 2026-10-19
+
+#### 单线程主 Agent 架构：P1 runtime 骨架 + P2a 执行体守卫/四路径锁交接（全链）
+
+- **背景**：旧架构 `_chat_lock` 只串行、不归属；ChatQueue worker 在锁释放后用旧历史快照启动第二个 `runner.chat` run（2026-10-19 事故：定时任务 11:00:08 写入 → 首个 run 压缩重读吸收 → 11:03:15 结束后 ChatQueue 再启第二个 run → 11:04:24 第二次压缩、11:05:01 重复回复）。用户定调：**主 Agent 单实例/单线程独占，任何时间不允许两个主 Agent**；压缩为唯一 no-intake 阶段；子 Agent 并发不变。
+- **架构 spec**：`docs/superpowers/specs/2026-10-19-single-threaded-main-agent-design.md` v1.4；`MainAgentRuntime` 单例专用线程 + FIFO + `RunCommand`/`RunHandle`；所有入口最终只提交命令；`runner.chat` 唯一调用点。
+- **P1（已交付）**：`agent/main_runtime.py` + `tests/test_main_runtime.py`（23 passed）；纯骨架、不改调用方、零生产风险。commits `51c47f41`（骨架）+ `28cf3fa5`（STOPPED → cancelled，远端复核无 P1）。
+- **P2a（已交付）**：`27769ae0`。
+  - `agent/runner.py`：`acquire_main_agent_thread()`/`release_main_agent_thread(token)` + `NiuRunner.chat` 薄包装（`yield from NiuRunner._chat_impl(self, ...)`，非绑定兼容测试）；任何重入拒绝。
+  - 四个调用点显式 `gen.close()`：`/chat` SSE、`/chat/sync`、`compat /chat/session`、`chat_queue._process_single`；脚本同步改造，静态 grep `for chunk in *.chat(` 零命中。
+  - `niu_api/chat_lock.py`：`start_executor()` 返回 asyncio `sf` + **concurrent completion**（避开 asyncio 包装取消但 worker 仍跑的提前释放）；`release_chat_lock_when_done()` 幂等、pending 才 `request_stop`、完成时 `clear_stop`→`release`、watchdog 只请求停止不释放；排队取消由 `sf` done-callback 终结 completion。
+  - `chat_queue`：`acquired/sf/completion` 前置初始化；残留停止标志清理从取锁前移到 acquire 后（D-8）；外层 finally 仅“持过锁且 completion done”时兜底清标志。
+  - `/chat` SSE 断连：`body_iterator` 取消时锁由 executor completion 回调释放，不再提前 release（守卫/锁同生命周期）。
+- **测试**：新增 `tests/test_runner_guard.py`（9）、`tests/test_chat_lock_handoff.py`（9）、`tests/test_p2a_call_sites.py`（11，含四路径关闭/闸门、close 抛错、D-8 与早退回归）；点名 29 passed。全量 **4700 passed / 34 failed / 179 skipped**；34 failed 在干净 HEAD 上逐条复现（vision probe/screenshot、cursor/journal 隔离等**既存失败**），与本工程无关。
+- **审查**：计划 10 轮双审（A local-vision + B 远端）连续两轮零 P1/P2；实施 spec/quality 终审均 APPROVE、零 P1/P2。关键教训：asyncio `run_in_executor` 的包装取消 ≠ worker 结束；锁交接必须以 concurrent completion 为准。
+- **下一步**：P2b（ChatQueue 迁移到 runtime + 历史在 runtime 内读 + `_chat_lock` 接线 + 回复持久化顺序）、P3（前端三端点提交命令 + SSE 有界队列）、P4（审计/真机）。
+
 ### 2026-10-17
 
 #### 小工程 F-4：媒体队列遇「文件已不存在」——不重试、不报 RuntimeError、归因如实（方案 R1–R3 → T1 双阶段审查 → 真机 AC 全过）
