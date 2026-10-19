@@ -385,6 +385,10 @@ class MainAgentRuntime:
             except Exception:
                 pass
             handle._set_result("".join(chunks) if ok and not stop_requested else None)
+        rv = getattr(runner, "last_return_value", None)
+        if isinstance(rv, dict) and rv.get("result") == "STOPPED":
+            stop_requested = True
+            handle._set_result(None)
         if stop_requested:
             handle._set_error("cancelled")
             handle._emit({"type": "cancelled", "id": handle.id})

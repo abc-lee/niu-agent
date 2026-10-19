@@ -152,6 +152,25 @@ def test_future_resolved():
         rt.stop()
 
 
+def test_stopped_return_value_marks_cancelled():
+    class StoppedRunner:
+        last_return_value = {"result": "STOPPED"}
+
+        def chat(self, *a, **k):
+            yield "partial"
+
+    rt = MainAgentRuntime(runner=StoppedRunner())
+    rt.start()
+    try:
+        h = rt.submit(RunCommand(content="x"))
+        events = list(h.events())
+        assert events[-1]["type"] == "cancelled"
+        assert h.wait(2) is None
+        assert h.error == "cancelled"
+    finally:
+        rt.stop()
+
+
 def test_resources_channel_stream_forwarded():
     runner = FakeRunner()
     rt = MainAgentRuntime(runner=runner)
