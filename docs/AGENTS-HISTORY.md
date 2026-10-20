@@ -8,6 +8,18 @@
 
 ---
 
+### 2026-10-20
+
+#### P4：真机验收 + 死模块清理 + 启停/崩溃恢复（main `a002a1ed`）
+
+- **真机 AC（PID 79415，08:43 启动）**：AC-1 `/chat/sync` ✅（P3通过，6963/6964）；AC-2 `/chat` SSE ✅（chunk+done）；AC-3 `/api/chat/session` ✅（会话通过）；AC-4 scheduler 一次性任务 → ChatQueue ✅（6969/6970，任务自动删除）；AC-5 SSE 断连不取消 run ✅（2s 断开、40s 后 6974 落库）；AC-6 长任务排队串行未取得长任务证据（后台 curl 未存活），串行性由 P2b/P3 单测覆盖。
+- **死模块清理**：`niu_api/chat_lock.py` 与 `tests/test_chat_lock_handoff.py` 已无生产 import，删除（`a002a1ed`）；点名 132 passed。
+- **重启**：`/api/shutdown` → 启动器退出；`./niu` 重启 PID 80248，启动顺序正常（runtime → ChatQueue → SSE/scheduler），`/chat/sync` 返回「重启通过」。
+- **崩溃恢复**：`kill -9 80248` → 启动器退出；`./niu` 重启 PID 80473，health OK、`/chat/sync` 返回「崩溃通过」（6979/6980）。
+- **KG 核查**：`lightrag_storage` 仅启动期写入；AC/重启/崩溃文本（P3通过/SSE通过/会话通过/队列通过/断连通过/重启通过/崩溃通过）在 chunks 中零命中。
+- **约束**：用户明确禁止全量 pytest；本段只跑点名测试。
+- **后续**：无；当前版本进入正常使用。
+
 ### 2026-10-19
 
 #### 单线程主 Agent 架构：P1 runtime 骨架 + P2a 执行体守卫/四路径锁交接（全链）
