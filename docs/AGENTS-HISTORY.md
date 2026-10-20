@@ -28,7 +28,7 @@
 - **HA 语义依据**：只有 `trigger` 体内的 `variables` 会被 HA 渲染 `{{ ... }}` 并合并到 `event.variables` 顶层；`subscribe_trigger` 顶层 `variables` 只进 `TriggerInfo`，不回到事件。
 - **测试**：新增 `tests/test_ha_watcher_event_context.py`（15）、`tests/test_ha_subscribe_variables.py`（8）；点名 `test_ha_watcher_state_guard.py`(23) + 这两个 = **46 passed**，再加 `test_ha_automation.py`(11) 共 **57 passed**；`ruff check niu_api/internal/ha_watcher/watcher.py tests/test_ha_watcher_event_context.py tests/test_ha_subscribe_variables.py` → All checks passed（`mcp-servers/ha-server/src/niu_ha_server/__init__.py` 的 8 项既有诊断不在清零范围）。未跑全量 pytest（用户禁止）；实施 Agent 未 commit。
 - **文档**：`docs/manual-ha-setup.md` 3.2 补 trigger 事件字段表、`trigger.variables` 订阅/事件示例与「顶层 `variables` 不回到事件」；新增 5.5（推送格式样例、重启/恢复过滤只对 `platform: state` 生效、disk CLI 双引号示例与单引号陷阱、手改 `~/.niu/ha-config.json` 的 variables 约束）；9 节 `ha_subscribe` 行同步。
-- **真机验收**：待 PM/用户执行（plan Task 3 Step 4：重启 Niu → 触发一次 `state_change` 订阅 → `附加:` 须同时出现字面量原值与模板渲染值且无字面 `{{`；`unavailable -> outside_unlock` 仍不推送；日志无 `[HAWatcher] 订阅失败`）。
+- **真机验收（2026-10-20 12:47，通过）**：unsubscribe → `ha_subscribe` 重建成功，`entity_id/condition/to_state` 原样保留，`variables` 写入 `trigger.variables`（非顶层）；真实指纹开锁事件推送 `附加: lock_method=biological, lock_key_id=2147549186`，两值均为本次事件真实值；`from_state=inside_unlock → to_state=outside_unlock` 为真实转换；历史 `unavailable → outside_unlock` 重启误报未再出现；日志无 `[HAWatcher] 订阅失败`。
 
 ### 2026-10-19
 
