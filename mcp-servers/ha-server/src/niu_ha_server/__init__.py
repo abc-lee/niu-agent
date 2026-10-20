@@ -1211,7 +1211,7 @@ def ha_control(entity_id: str, action: str = "", service: str = "",
 def ha_subscribe(entity_id: str = "", condition: str = "", value: float = None,
                  from_state: str = "", to_state: str = "",
                  description: str = "", trigger_id: str = "",
-                 operation: str = "", **kwargs) -> dict:
+                 operation: str = "", variables: dict = None, **kwargs) -> dict:
     """订阅智能家居设备状态变化通知。"""
     if operation == "list":
         config = _read_config()
@@ -1233,6 +1233,15 @@ def ha_subscribe(entity_id: str = "", condition: str = "", value: float = None,
         except Exception:
             pass
         return {"success": True, "trigger_id": trigger_id, "message": "已取消订阅"}
+
+    if variables is not None and not isinstance(variables, dict):
+        return {"success": False, "error": "variables 必须是 JSON 对象"}
+    if isinstance(variables, dict) and "trigger" in variables:
+        return {"success": False, "error": "variables 不能包含保留键 trigger"}
+    if isinstance(variables, dict):
+        allowed = (str, int, float, bool)
+        if any(not isinstance(v, allowed) for v in variables.values()):
+            return {"success": False, "error": "variables 的值必须是标量（str/int/float/bool）"}
 
     if not entity_id or not condition:
         return {"success": False, "error": "新增订阅时 entity_id 和 condition 必填"}
@@ -1269,6 +1278,8 @@ def ha_subscribe(entity_id: str = "", condition: str = "", value: float = None,
                 trigger_entry["from_state"] = from_state
             if to_state:
                 trigger_entry["to_state"] = to_state
+        if variables:
+            trigger_entry["variables"] = variables
         trigger_entry["description"] = description
         config["triggers"].append(trigger_entry)
         return {"trigger_id": tid}
@@ -2315,7 +2326,7 @@ TOOL_SCHEMAS = {
     },
     "ha_subscribe": {
         "name": "ha_subscribe",
-        "description": "订阅智能家居设备状态变化通知。支持 state_change（状态变化）、above（超过阈值）、below（低于阈值）三种条件。触发时通过 [智能家居] 前缀消息推送。operation='list' 查看当前订阅，operation='unsubscribe' 取消订阅。",
+        "description": "订阅智能家居设备状态变化通知。支持 state_change（状态变化）、above（超过阈值）、below（低于阈值）三种条件。触发时通过 [智能家居] 前缀消息推送，推送内容附带实体、状态变化、时间等上下文。可选 variables（JSON 对象，值必须是标量）写入 trigger.variables，HA 渲染 {{ }} 模板后随事件带回，用于附带额外信息。operation='list' 查看当前订阅，operation='unsubscribe' 取消订阅。",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -2325,6 +2336,10 @@ TOOL_SCHEMAS = {
                 "from_state": {"type": "string", "description": "state_change 起始状态过滤"},
                 "to_state": {"type": "string", "description": "state_change 目标状态过滤"},
                 "description": {"type": "string", "description": "触发时的描述文本"},
+                "variables": {
+                    "type": "object",
+                    "description": "附加字段，写入 trigger.variables；HA 会渲染模板并合并到事件，如 {\"lock_method\": \"{{ states('sensor.lock_method') }}\"}",
+                },
                 "trigger_id": {"type": "string", "description": "触发器标识，取消订阅时必填"},
                 "operation": {"type": "string", "enum": ["unsubscribe", "list"], "description": "操作类型，不传表示新增"},
             },

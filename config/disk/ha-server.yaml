@@ -62,7 +62,7 @@ tools:
   - name: ha_subscribe
     category: write
     short: "订阅状态通知"
-    long: "订阅设备状态变化通知。支持 state_change/above/below 三种条件。触发时通过 [智能家居] 前缀推送。operation=list 查看，operation=unsubscribe 取消"
+    long: "订阅设备状态变化通知。支持 state_change/above/below 三种条件。触发时通过 [智能家居] 前缀推送，附带实体/状态变化/时间上下文。可选 variables（JSON 对象，值必须是标量）写入 trigger.variables，HA 渲染模板后随事件带回。operation=list 查看，operation=unsubscribe 取消"
     parameters:
       - name: entity_id
         position: 1
@@ -87,6 +87,10 @@ tools:
       - name: description
         type: string
         description: "触发时的描述文本"
+      - name: variables
+        type: object
+        cli_format: json
+        description: "附加字段（JSON 对象），写入 trigger.variables；HA 渲染模板后随事件带回，如 {\"lock_method\": \"{{ states('sensor.lock_method') }}\"}"
       - name: trigger_id
         flag: trigger-id
         type: string

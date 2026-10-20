@@ -20,6 +20,16 @@
 - **约束**：用户明确禁止全量 pytest；本段只跑点名测试。
 - **后续**：无；当前版本进入正常使用。
 
+#### HA 触发事件通用上下文透传（VERSION 0.5.5，plan `docs/superpowers/plans/2026-10-20-ha-trigger-context.md`）
+
+- **目标**：`subscribe_trigger` 事件的通用字段（`entity_id` / `platform` / `from_state` / `to_state` / 自定义 `variables`）随 `[智能家居]` 推送带给主 Agent，不做门锁或指纹特例。
+- **watcher**：`niu_api/internal/ha_watcher/watcher.py` 新增模块级 `_state_text`（只取 `.state`、折叠换行、截断 200 字符、不展开 attributes）与 `_format_trigger_context`（`实体 / 触发类型 / 状态变化 / 附加` 按需成行 + 程序本地 `时间`；缺字段省略、非 dict 不抛异常、附加上限 10 项）；`_handle_trigger_event` 在既有重启过滤之后把 `description\ncontext` 交给 `_submit_push`（签名仍为单个字符串）；`_build_trigger_config` 把 `variables` 写进 **`trigger` 体内部**，并剔除保留键 `trigger` 与非标量值；`_connect_and_listen` 补 `[HAWatcher] 订阅失败` 日志。WS 请求仍只有 `id/type/trigger`，无顶层 `variables`。
+- **ha-server**：`ha_subscribe(..., variables: dict = None, ...)` 校验（必须是对象、值须为标量、不得含 `trigger`）后持久化进订阅配置；`TOOL_SCHEMAS` 与 `config/disk/ha-server.yaml` 同步 `variables`（`cli_format: json`）。
+- **HA 语义依据**：只有 `trigger` 体内的 `variables` 会被 HA 渲染 `{{ ... }}` 并合并到 `event.variables` 顶层；`subscribe_trigger` 顶层 `variables` 只进 `TriggerInfo`，不回到事件。
+- **测试**：新增 `tests/test_ha_watcher_event_context.py`（15）、`tests/test_ha_subscribe_variables.py`（8）；点名 `test_ha_watcher_state_guard.py`(23) + 这两个 = **46 passed**，再加 `test_ha_automation.py`(11) 共 **57 passed**；`ruff check niu_api/internal/ha_watcher/watcher.py tests/test_ha_watcher_event_context.py tests/test_ha_subscribe_variables.py` → All checks passed（`mcp-servers/ha-server/src/niu_ha_server/__init__.py` 的 8 项既有诊断不在清零范围）。未跑全量 pytest（用户禁止）；实施 Agent 未 commit。
+- **文档**：`docs/manual-ha-setup.md` 3.2 补 trigger 事件字段表、`trigger.variables` 订阅/事件示例与「顶层 `variables` 不回到事件」；新增 5.5（推送格式样例、重启/恢复过滤只对 `platform: state` 生效、disk CLI 双引号示例与单引号陷阱、手改 `~/.niu/ha-config.json` 的 variables 约束）；9 节 `ha_subscribe` 行同步。
+- **真机验收**：待 PM/用户执行（plan Task 3 Step 4：重启 Niu → 触发一次 `state_change` 订阅 → `附加:` 须同时出现字面量原值与模板渲染值且无字面 `{{`；`unavailable -> outside_unlock` 仍不推送；日志无 `[HAWatcher] 订阅失败`）。
+
 ### 2026-10-19
 
 #### 单线程主 Agent 架构：P1 runtime 骨架 + P2a 执行体守卫/四路径锁交接（全链）

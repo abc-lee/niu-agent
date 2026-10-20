@@ -225,6 +225,34 @@ Trigger 事件**不是** `event_type: "trigger"`，而是通过 `event.variables
 
 **判断逻辑**：`"trigger" in msg.get("event", {}).get("variables", {})`
 
+**Trigger 事件里的通用字段（`event.variables.trigger`）：**
+
+| 字段 | 含义 | 备注 |
+|------|------|------|
+| `platform` | 触发器类型（`state` / `numeric_state` / `template` …） | 与订阅时写的 `platform` 一致 |
+| `entity_id` | 触发的实体 | `template` 触发器可能没有 |
+| `from_state` / `to_state` | 变化前后的 State 对象 | `state` / `numeric_state` 通常携带，`template` 可能没有；程序只取 `.state`，不转发 `attributes` |
+| 自定义键 | 写在 `trigger.variables` 里的字段 | HA 渲染后合并到 `event.variables` 顶层，与 `trigger` 平级 |
+
+**⚠️ `variables` 必须写在 `trigger` 体内：**
+
+```json
+{"id": 11, "type": "subscribe_trigger",
+ "trigger": {"platform": "state", "entity_id": "sensor.lock_action", "to": "outside_unlock",
+             "variables": {"lock_method": "{{ states('sensor.lock_method') }}"}}}
+```
+
+HA 先渲染 `trigger` 体内 `variables` 的 `{{ ... }}`，再把渲染结果合并进事件：
+
+```json
+{"id": 11, "type": "event", "event": {"variables": {
+    "trigger": {"platform": "state", "entity_id": "sensor.lock_action", "to_state": {"state": "outside_unlock"}},
+    "lock_method": "指纹"
+}}}
+```
+
+**`subscribe_trigger` 顶层的 `variables` 不会回到事件**（HA 只把它放进 `TriggerInfo`，用于 `enabled` 等元信息），因此不是可用参数。
+
 **call_service 与 trigger 事件交错问题：**
 
 调用 `call_service` 时，WebSocket 会先返回 `result` 消息，再返回 `trigger` event 消息（如果触发了条件）。必须用基于 msg ID 或消息类型的匹配逻辑来正确接收两者，不能假设单一 send→recv 映射。
@@ -461,6 +489,39 @@ curl -X POST http://localhost:8123/api/config/config_entries/flow \
 - 空闲保活（ping/pong）：客户端主动保活，防 HA 因闲置断开长连接；长连接能否稳定维持以你环境为准
 - Docker restart 后自动恢复：已验证通过
 
+### 5.5 推送内容与 variables（0.5.5 起）
+
+**程序推送格式**：ha_watcher 收到 trigger 事件后，把订阅的 `description` 与事件里的通用字段拼成一条消息，以 `[智能家居]` 前缀写入 Message.DB 唤醒主 Agent：
+
+```text
+[智能家居] 门锁：有人从门外开锁
+实体: sensor.lock_action
+触发类型: state
+状态变化: inside_unlock -> outside_unlock
+附加: lock_method=指纹, lock_key_id=2147549186
+时间: 2026-10-20 14:32:07
+```
+
+- `实体 / 触发类型 / 状态变化 / 附加` 都是按需出现：事件里缺哪个字段就省略哪一行，不抛异常；`template` 触发器通常只有 `触发类型` 与 `时间`
+- `状态变化` 只取 `from_state.state` / `to_state.state`，`attributes` 不进入推送
+- `附加` 最多 10 项；实体名与每个值先折叠换行再截断到 200 字符
+- `时间` 由程序本地生成（HA 的 trigger 事件不带 `time_fired`）
+
+**variables 用法**：`ha_subscribe` 的 `variables`（JSON 对象）被写进 `trigger` 体内，由 HA 渲染 `{{ ... }}` 后随事件带回，程序不自行渲染模板；值可以是字面量，也可以是 HA 模板。
+
+**重启/恢复过滤只对 state trigger 生效**：启动回填只按 `platform == "state"` 判定并丢弃（如 `unknown -> unknown`、`unavailable -> outside_unlock` 不推送）；`numeric_state` / `template` 触发器不走该过滤。订阅时带 `from_state` 的订阅会绕过该守卫。
+
+**disk CLI 形态**（`--variables` 收 JSON；`entity_id`/`condition` 仍是位置参数）：
+
+| 场景 | 命令示例 |
+|------|----------|
+| 值内含单引号（HA 模板） | `/ha/ha_subscribe sensor.lock_action state_change --description "门锁" --variables "{\"lock_method\": \"{{ states('sensor.lock_method') }}\"}"` |
+| 值内无单引号 | `/ha/ha_subscribe sensor.temp above --value 30 --description "客厅过热" --variables '{"site": "front"}'` |
+
+⚠️ **单引号陷阱**：仅当 JSON 值内含单引号时（典型就是 HA 模板 `states('…')`）外层必须用双引号、并把 JSON 内部的 `"` 转义成 `\"`，**不能用单引号包整段 JSON** —— `shlex` 会在下一个单引号处结束该段并静默剥掉模板里的单引号，HA 收到的是 `states(sensor.lock_method)`，不报错但渲染结果不对。值内没有单引号的 JSON 仍可按手册既有示例用单引号。
+
+**手改 `~/.niu/ha-config.json`**：`variables` 必须是对象、每个值必须是标量（字符串/数字/布尔），且不得包含保留键 `trigger`；不满足的条目在建立订阅时被剔除（`ha_subscribe` 侧同样直接拒绝）。
+
 ## 6. 测试结果汇总
 
 ### 6.1 Phase 1: API 能力摸底
@@ -596,7 +657,7 @@ ha-server 提供 8 个 MCP 工具，通过虚拟磁盘 `/ha/` 目录访问：
 | `ha_setup` | 写 | 配置 HA 连接 | 首次使用传入 ha_url/ha_token，无参数返回连接状态 |
 | `ha_status` | 读 | 查询设备状态 | 默认返回精简列表（name/area/entity_id/type/state/actions）；传 `entity_id` 返回含 `services`/`properties` 的全量信息；还额外返回 `areas`/`scenes`/`automations` 三类 |
 | `ha_control` | 写 | 控制设备 | 立即执行一次操作。优先用 service 参数指定 HA 服务 |
-| `ha_subscribe` | 写 | 订阅状态通知 | 条件触发推送。支持 state_change/above/below 三种条件 |
+| `ha_subscribe` | 写 | 订阅状态通知 | 条件触发推送。支持 state_change/above/below 三种条件；推送附带实体/触发类型/状态变化/时间/附加上下文（见 5.5）。可选 `variables`（JSON 对象，值须为标量）写入 `trigger.variables`，由 HA 渲染模板后随事件带回 |
 | `ha_integrate` | 写 | 管理集成 | 添加/删除设备品牌集成，通过 Config Flow REST API |
 | `ha_automation` | 写 | 管理自动化 | 条件触发持续生效的规则 |
 | `ha_scene` | 写 | 管理场景 | 多设备瞬间切换到预设状态 |

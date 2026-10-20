@@ -82,6 +82,56 @@ def _normalize_triggers(raw) -> list:
         out.append(item)
     return out
 
+def _state_text(value) -> str:
+    """把 State dict / 标量转成短文本；只取 .state，不展开 attributes。"""
+    if isinstance(value, dict):
+        value = value.get("state")
+    if isinstance(value, (dict, list, tuple, set)):
+        return ""
+    if value is None:
+        return ""
+    return " ".join(str(value).split())[:200]
+
+
+def _format_trigger_context(trigger_data: dict, variables: dict) -> str:
+    """把 HA trigger 的通用字段拼成给 Agent 的多行上下文。"""
+    if not isinstance(trigger_data, dict):
+        trigger_data = {}
+    lines = []
+
+    entity_id = _state_text(trigger_data.get("entity_id"))
+    if entity_id:
+        lines.append(f"实体: {entity_id}")
+
+    platform = _state_text(trigger_data.get("platform") or trigger_data.get("trigger"))
+    if platform:
+        lines.append(f"触发类型: {platform}")
+
+    from_val = _state_text(trigger_data.get("from_state"))
+    to_val = _state_text(trigger_data.get("to_state"))
+    if from_val or to_val:
+        lines.append(f"状态变化: {from_val or '?'} -> {to_val or '?'}")
+
+    extras = []
+    if isinstance(variables, dict):
+        for key, value in variables.items():
+            if key == "trigger" or not isinstance(key, str):
+                continue
+            key_text = " ".join(key.split())
+            text = _state_text(value)
+            if key_text and text:
+                extras.append(f"{key_text}={text}")
+            if len(extras) >= 10:
+                break
+    if extras:
+        lines.append("附加: " + ", ".join(extras))
+
+    if not lines:
+        return ""
+    lines.append("时间: " + time.strftime("%Y-%m-%d %H:%M:%S"))
+    return "\n".join(lines)
+
+
 class _HAWatcher:
 
     def __init__(self):
@@ -176,6 +226,8 @@ class _HAWatcher:
                         self._handle_trigger_event(result, triggers)
                 if result.get("success"):
                     self._current_subscriptions[trigger["id"]] = msg_id
+                else:
+                    print(f"[HAWatcher] 订阅失败: {trigger.get('id')}: {result.get('error')}")
 
             # 订阅完成后记录当前 mtime，避免立即重连
             try:
@@ -211,12 +263,28 @@ class _HAWatcher:
                 config["from"] = trigger["from_state"]
             if "to_state" in trigger:
                 config["to"] = trigger["to_state"]
-            return config
         elif condition == "above":
-            return {"platform": "numeric_state", "entity_id": entity_id, "above": trigger.get("threshold", 0)}
+            config = {"platform": "numeric_state", "entity_id": entity_id, "above": trigger.get("threshold", 0)}
         elif condition == "below":
-            return {"platform": "numeric_state", "entity_id": entity_id, "below": trigger.get("threshold", 0)}
-        return {"platform": "state", "entity_id": entity_id}
+            config = {"platform": "numeric_state", "entity_id": entity_id, "below": trigger.get("threshold", 0)}
+        else:
+            config = {"platform": "state", "entity_id": entity_id}
+
+        # HA 只渲染 trigger 内部 variables，并把它合并到 event.variables 顶层；
+        # 顶层 subscribe_trigger.variables 不会回到事件（HA TriggerInfo 仅用于 enabled 等）。
+        variables = trigger.get("variables")
+        if not isinstance(variables, dict):
+            variables = None
+        else:
+            # 手改 ha-config.json 可能绕过 ha_subscribe 的校验；触发侧也必须剔除保留键与非标量。
+            allowed = (str, int, float, bool)
+            variables = {
+                k: v for k, v in variables.items()
+                if k != "trigger" and isinstance(v, allowed)
+            }
+        if variables:
+            config["variables"] = variables
+        return config
 
     def _handle_trigger_event(self, msg: dict, triggers: list):
         triggers = _normalize_triggers(triggers)
@@ -274,7 +342,9 @@ class _HAWatcher:
                 print(f"[HAWatcher] 忽略非真实状态转换（重启/恢复回填）: {from_val} -> {to_val} ({label})")
             return
 
-        self._submit_push(description)
+        context = _format_trigger_context(trigger_data, variables)
+        message = f"{description}\n{context}" if context else description
+        self._submit_push(message)
 
     def _push_to_chat(self, description: str):
         try:
