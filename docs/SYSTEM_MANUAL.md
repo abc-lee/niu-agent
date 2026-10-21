@@ -1129,9 +1129,9 @@ curl http://<host>:<port>/props      # 本地 llama.cpp：确认上下文窗口�
 4. **展示图片给用户**：仅在回复中向用户展示图片时用 `![描述](本地绝对路径)` 标记（前端渲染给用户看，不会让模型看到图——模型看图只认 `analyze_image`）
 5. **图文件缺失/已清理** → `analyze_image` 返回明确错误串（不崩溃中断）——重新截屏即可
 
-## 语音朗读（TTS，系统语音）
+## 语音朗读（TTS）
 
-**一句话**：Chat 页每收到一条 assistant 文本（含工具轮旁白）就按到达顺序排队，用操作系统自带中文语音朗读；每次载入 Chat 都是**关**，点输入区朗读图标才开。TTS 只消费现有 `new_message` 中 `role=assistant` 的已落库消息，没有额外旁路事件；工具输出 `role=tool` 不读。
+**一句话**：Chat 页每收到一条 assistant 文本（含工具轮旁白）就按到达顺序排队，用系统语音或可选的本地 Qwen3-TTS 朗读；每次载入 Chat 都是**关**，点输入区朗读图标才开。TTS 只消费现有 `new_message` 中 `role=assistant` 的已落库消息，没有额外旁路事件；工具输出 `role=tool` 不读。
 
 ### 配置
 
@@ -1147,11 +1147,11 @@ curl http://<host>:<port>/props      # 本地 llama.cpp：确认上下文窗口�
 
 | 键 | 缺省 | 说明 |
 |----|------|------|
-| `provider` | `"system"` | 只有系统语音；Kokoro 属阶段二，未实现 |
-| `voice` | `""` | 空 = 自动选中文；非空按 voiceURI 全等 → name 全等 → name 包含匹配，命中必须是中文音色；无匹配回落自动 |
+| `provider` | `"system"` | `system` / `qwen3tts` / `auto`；`auto` = Qwen 可用则用，否则系统语音 |
+| `voice` | `""` | 系统：空 = 自动选中文；Qwen：speaker 名（动态列表里选，如 `serena`、`vivian`） |
 | `rate` | `1.0` | 合法 0.5–2.0；缺失/非正数按 1.0，正数越界收敛 |
 
-Chat 载入或重新获得焦点时重新读取配置（`provider`/`voice`/`rate`），改完不必重启 Niu。配置缺失/损坏/`tts` 不是对象时按缺省处理；段里残留的旧 `enabled` 键一律忽略。该段保留给阶段二外部 TTS（`provider`/`voice`/`rate`）。**设置页没有朗读表单，配置由主 Agent 维护。**
+Chat 载入或重新获得焦点时重新读取配置（`provider`/`voice`/`rate`），改完不必重启 Niu。配置缺失/损坏/`tts` 不是对象时按缺省处理；段里残留的旧 `enabled` 键一律忽略。**设置页没有朗读表单，配置由主 Agent 维护。**
 
 ### 朗读范围
 
@@ -1172,9 +1172,62 @@ Chat 载入或重新获得焦点时重新读取配置（`provider`/`voice`/`rate
 - macOS：`say -v '?'` 查中文语音名，填 `voice`。
 - Windows：先装系统中文语音包；没有中文语音或语音列表为空时按钮置灰 + title 提示，不用英文硬读。
 
-### 阶段二
+### 外挂 Qwen3-TTS（可选，全本地）
 
-Kokoro/ONNX 本地模型语音尚未实现；`provider` 目前只有 `system`。
+**定位**：系统语音之外的本地音色；纯 C 引擎，不 import torch/transformers，**不建第二个 venv**。模型/二进制只在用户家目录，**不放进项目目录、不打进整包**，作为可选能力；未安装时继续系统语音。
+
+```
+~/.niu/bin/qwen_tts                         # C 引擎二进制
+~/.niu/models/qwen3-tts/0.6b-customvoice/   # 0.6B CustomVoice
+~/.niu/models/qwen3-tts/1.7b-customvoice/   # 1.7B，可选
+```
+
+安装（Niu Agent 征得用户同意后执行；禁止自动下载）：
+
+```bash
+git clone https://github.com/gabriele-mastrapasqua/qwen3-tts.git /tmp/qwen3-tts
+cd /tmp/qwen3-tts && make blas
+mkdir -p ~/.niu/bin && cp qwen_tts ~/.niu/bin/qwen_tts
+bash download_model.sh --model small \
+  --dir ~/.niu/models/qwen3-tts/0.6b-customvoice
+~/.niu/bin/qwen_tts -d ~/.niu/models/qwen3-tts/0.6b-customvoice --list-speakers
+```
+
+配置示例（当前可选用 `serena` + `int4`）：
+
+```json
+"tts": {
+  "provider": "qwen3tts",
+  "voice": "serena",
+  "rate": 0.9,
+  "qwen": {
+    "model": "0.6b-customvoice",
+    "quantization": "int4",
+    "model_dir": "",
+    "binary": "",
+    "port": 17987,
+    "auto_start": true,
+    "idle_stop_minutes": 10,
+    "fallback": "system"
+  }
+}
+```
+
+- `quantization`：`bf16` / `int8` / `int4`，是 sidecar 启动参数；改后调 `POST /api/tts/reload`，不重启 Niu。
+- `voice`：**不要写死**；用 `--list-speakers` / `GET /v1/speakers` 或 `GET /api/tts/options?probe=true` 动态取，由用户试听后定。
+- 任何 Qwen 超时/错误：同一条消息回落系统语音，不静默。
+- C 引擎 `--serve` 只收端口，且当前监听 `0.0.0.0`；不要把端口暴露到不可信网络，必要时用系统防火墙限制。
+
+#### Niu Agent 协商流程
+
+1. `GET /api/tts/options?probe=true`：安装态、模型、量化项、动态音色、health、最近 benchmark。
+2. 问用户：自然度优先 / 实时优先 / 磁盘优先。
+3. 未安装先征得同意再下载；不要自动下。
+4. 用固定 10s 中文文本实测 RTF/TTFA；**RTF>1.5 明确告知会跟不上**，由用户决定是否仍用。
+5. 拉动态音色，生成 2–3 个中文样音让用户选；不要替用户定音色。
+6. 写 config → `POST /api/tts/reload` → 用真实 assistant 消息试听。
+
+> 不接任何在线 TTS；模型/二进制不随安装包分发。
 
 ## 文本编码
 

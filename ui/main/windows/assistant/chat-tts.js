@@ -1,19 +1,22 @@
 (function () {
   'use strict';
-  var DEFAULTS = { provider: 'system', voice: '', rate: 1.0 };
+  var DEFAULTS = { provider: 'system', voice: '', rate: 1.0, qwen: { model: '0.6b-customvoice', quantization: 'int8', model_dir: '', binary: '', port: 17987, auto_start: true, idle_stop_minutes: 10, fallback: 'system' } };
   var SEEN_CAP = 200, VOICES_TIMEOUT = 1500;
   var T = window.ChatTtsText;
   if (!T) { console.error('[TTS] chat-tts-text.js missing'); return; }
   var synth = window.speechSynthesis || null;
+  var synthMissing = !synth || (typeof SpeechSynthesisUtterance === 'undefined');
   var ttsBtn = null, config = Object.assign({}, DEFAULTS);
   var sessionEnabled = false;
-  var unavailable = !synth || (typeof SpeechSynthesisUtterance === 'undefined');
+  var unavailable = synthMissing;
   var noChineseVoice = false, speechBlocked = false;
   var seenIds = new Set(), voicesPromise = null, generation = 0;
   var lastText = '', lastTextAt = 0;
   var queue = [], speaking = false;
+  var currentAudio = null, audioUrl = null;
   function getBtn() { if (!ttsBtn) ttsBtn = document.getElementById('tts-btn'); return ttsBtn; }
   function isMini() { return !!(document.body && document.body.classList.contains('mini')); }
+  function qwenMode() { return config.provider === 'qwen3tts' || config.provider === 'auto'; }
   function readConfig() {
     var api = window.electronAPI;
     if (!api || typeof api.getTtsConfig !== 'function') return Promise.resolve(Object.assign({}, DEFAULTS));
@@ -29,8 +32,12 @@
       if (typeof raw.provider === 'string' && raw.provider) next.provider = raw.provider;
       if (typeof raw.voice === 'string') next.voice = raw.voice;
       next.rate = T.normalizeRate(raw.rate);
+      if (raw.qwen && typeof raw.qwen === 'object' && !Array.isArray(raw.qwen)) next.qwen = Object.assign({}, DEFAULTS.qwen, raw.qwen);
     }
     config = next;
+    // qwen 模式不依赖 speechSynthesis：缺合成引擎按钮仍可开；只有系统分支才要求 synth+中文音色
+    unavailable = synthMissing && !qwenMode();
+    if (qwenMode()) noChineseVoice = false;
     syncButton(); probeVoice();
   }
   function refreshConfig() { return readConfig().then(applyConfig); }
@@ -56,7 +63,7 @@
     return voicesPromise;
   }
   function probeVoice() {
-    if (unavailable) return Promise.resolve(false);
+    if (unavailable || qwenMode()) return Promise.resolve(false);
     return ensureVoices().then(function (voices) {
       if (!voices.length) {
         noChineseVoice = true;
@@ -101,6 +108,75 @@
     }
     next(0);
   }
+  var QWEN_SPEAK_API = 'http://127.0.0.1:9876/api/tts/speak';
+  function playQwenAudio(blob, myGen, onFail, onDone) {
+    var url = URL.createObjectURL(blob);
+    var audio = new Audio(url);
+    var handled = false;
+    function detach(pauseIt) {
+      if (pauseIt) { try { audio.pause(); } catch (e) { /* no-op */ } }
+      if (currentAudio === audio) currentAudio = null;
+      if (audioUrl === url) { try { URL.revokeObjectURL(url); } catch (e) { /* no-op */ } audioUrl = null; }
+    }
+    audio.addEventListener('ended', function () {
+      detach(false);
+      if (myGen === generation && onDone) onDone();
+    });
+    audio.addEventListener('error', function () {
+      if (handled) return; handled = true;
+      detach(true);
+      console.warn('[TTS] qwen audio error; fallback system voice');
+      if (myGen === generation && onFail) onFail();
+    });
+    currentAudio = audio; audioUrl = url;
+    try {
+      var p = audio.play();
+      if (p && typeof p.catch === 'function') p.catch(function (e) {
+        if (handled) return; handled = true;
+        detach(true);
+        console.warn('[TTS] qwen play rejected; fallback system voice:', (e && e.name) || e);
+        if (myGen === generation && onFail) onFail();
+      });
+    } catch (e) {
+      if (handled) return; handled = true;
+      detach(true);
+      if (myGen === generation && onFail) onFail();
+    }
+  }
+  function speakOneSystem(text, myGen, onDone) {
+    if (synthMissing) { if (onDone) onDone(); return; }
+    ensureVoices().then(function (voices) {
+      if (myGen !== generation) return;
+      var voice = T.pickVoice(voices, config.voice);
+      if (!voice) { console.warn('[TTS] system fallback 无中文音色，跳过该段'); if (onDone) onDone(); return; }
+      speakChunks([text], voice, myGen, onDone);
+    }).catch(function () { if (onDone) onDone(); });
+  }
+  function speakQwenChunks(chunks, myGen, onDone) {
+    var rate = T.normalizeRate(config.rate);
+    function next(i) {
+      if (myGen !== generation) return;
+      if (i >= chunks.length) { if (onDone) onDone(); return; }
+      var body = { text: chunks[i], rate: rate };
+      if (config.voice) body.voice = config.voice;
+      function fallback() { speakOneSystem(chunks[i], myGen, function () { if (myGen === generation) next(i + 1); }); }
+      fetch(QWEN_SPEAK_API, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+        .then(function (resp) {
+          if (!resp.ok) throw new Error('HTTP ' + resp.status);
+          return resp.blob();
+        })
+        .then(function (blob) {
+          if (myGen !== generation) return;
+          playQwenAudio(blob, myGen, fallback, function () { if (myGen === generation) next(i + 1); });
+        })
+        .catch(function (e) {
+          console.warn('[TTS] qwen speak failed; fallback system for same chunk:', (e && e.message) || e);
+          if (myGen !== generation) return;
+          fallback();
+        });
+    }
+    next(0);
+  }
   function enqueue(text, id) {
     if (!sessionEnabled || unavailable || noChineseVoice || speechBlocked || isMini()) return;
     if (id && seenIds.has(id)) return;
@@ -125,6 +201,15 @@
     var chunks = queue.shift();
     var myGen = generation;
     speaking = true;
+    if (qwenMode()) {
+      // qwen 分支：逐段 POST /api/tts/speak；非 OK/网络错误该段回退系统语音（绝不静默）。
+      // sidecar 由后端首个 /speak 才懒启动——Chat 载入不探测、不启动。
+      setTimeout(function () {
+        if (myGen !== generation) return;
+        speakQwenChunks(chunks, myGen, function () { endCurrent(myGen); });
+      }, 50);
+      return;
+    }
     ensureVoices().then(function (voices) {
       if (myGen !== generation) return;
       if (!voices.length) {
@@ -151,12 +236,14 @@
     generation++;
     queue.length = 0; speaking = false;
     try { synth && synth.cancel(); } catch (e) { /* no-op */ }
+    try { if (currentAudio) { currentAudio.pause(); currentAudio = null; } } catch (e) { /* no-op */ }
+    try { if (audioUrl) { URL.revokeObjectURL(audioUrl); audioUrl = null; } } catch (e) { /* no-op */ }
   }
   function getTitle() {
     if (unavailable) return '朗读：本机不支持语音合成';
     if (speechBlocked) return '朗读：被系统自动播放策略阻止';
     if (noChineseVoice) return '朗读：本机无中文语音，已停用';
-    return sessionEnabled ? '朗读：开' : '朗读：关';
+    return sessionEnabled ? (qwenMode() ? '朗读：开（Qwen 外挂）' : '朗读：开') : '朗读：关';
   }
   function syncButton() {
     var b = getBtn(); if (!b) return;

@@ -60,6 +60,7 @@ from niu_api.llm_proxy import router as llm_proxy_router
 from niu_api.media_api import router as media_router
 from niu_api.notes_api import router as notes_router
 from niu_api.session import router as session_router
+from niu_api.tts_api import router as tts_router
 
 # Configure logging — gated by config/logging.enabled (缺省 False)
 _logging_cfg = get_logging_config()
@@ -757,6 +758,7 @@ app.include_router(injector_router)  # Injector API
 app.include_router(alerts_router)  # Alerts API
 app.include_router(kg_router)  # Knowledge Graph API
 app.include_router(media_router)  # Media Vector API (Chat 页第二根横条轮询端点，与知识图谱同一服务)
+app.include_router(tts_router)  # Qwen3-TTS provider API (local-only; no Edge/online)
 app.include_router(brain_region_router)  # Brain Region API
 app.include_router(notes_router)  # Notes API
 app.include_router(llm_proxy_router)
