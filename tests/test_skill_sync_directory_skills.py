@@ -4,6 +4,7 @@
 LightRAGAdapter 替换 + _inject_skill_to_lightrag mock，不碰真实 LightRAG/LLM。
 """
 import hashlib
+import json
 from pathlib import Path
 from unittest import mock
 
@@ -647,3 +648,86 @@ def test_inject_skill_passes_empty_chunks(tmp_path, monkeypatch):
     assert "正文不应进入 chunks" not in payload
     assert "Skill: my-skill" not in payload
     assert "# My Skill" not in payload
+
+
+# ============== 状态写盘顺序（磁盘唯一真相，回归） ==============
+
+
+def test_scan_persists_new_skills_to_state_file(fake_sync, tmp_path):
+    """回归：scan_and_sync 必须把**本轮 next_scan**落盘。
+
+    旧顺序先 `_save_state()` 再 `self._last_scan = next_scan`，写的是尚未提交
+    的旧内存，磁盘永远缺本轮新增/更新/删除（现场：ego-browser 已在 KG，
+    ~/.niu/skill_sync_state.json 却无条目），进程重启后又当新增重注。
+    """
+    sync, skills_dir = fake_sync
+    flat = skills_dir / "ego-browser.md"
+    flat.write_text("# ego browser\n", encoding="utf-8")
+    (skills_dir / "dir-skill").mkdir()
+    dir_sk = skills_dir / "dir-skill" / "SKILL.md"
+    dir_sk.write_text("# dir skill\n", encoding="utf-8")
+
+    added, updated, deleted = sync.scan_and_sync()
+
+    assert (added, updated, deleted) == (2, 0, 0)
+    # 内存已推进
+    assert sync._last_scan["ego-browser"] == _sha256(flat)
+    assert sync._last_scan["dir-skill"] == _sha256(dir_sk)
+    # 关键断言：磁盘 state.json 同步含两个新条目（含 hash）+ notes 子状态
+    data = json.loads(sync._state_file.read_text(encoding="utf-8"))
+    assert data["ego-browser"] == _sha256(flat)
+    assert data["dir-skill"] == _sha256(dir_sk)
+    assert data["_notes"] == {}
+    # 重启语义：新实例从同一磁盘 state.json 加载后不会把这两个 skill 当新增重注
+    with mock.patch("pathlib.Path.home", return_value=tmp_path):
+        reloaded = type(sync)(skills_dir=str(skills_dir), use_watchdog=False)
+    assert reloaded._last_scan["ego-browser"] == _sha256(flat)
+    assert reloaded._last_scan["dir-skill"] == _sha256(dir_sk)
+
+
+def test_scan_save_failure_does_not_advance_memory(fake_sync, monkeypatch):
+    """写盘失败（_save_state 返回 False）→ 内存 _last_scan 不推进，下轮重试。"""
+    sync, skills_dir = fake_sync
+    sk = skills_dir / "will-retry.md"
+    sk.write_text("# retry\n", encoding="utf-8")
+
+    saved_args = []
+
+    def failing_save(scan_state=None):
+        saved_args.append(scan_state)
+        return False
+
+    monkeypatch.setattr(sync, "_save_state", failing_save)
+
+    added, _, _ = sync.scan_and_sync()
+
+    assert added == 1  # 注入成功但状态没能落盘
+    assert "will-retry" not in sync._last_scan
+    assert not sync._state_file.exists()
+    # 传给 _save_state 的是 next_scan（含新条目），不是旧内存
+    assert len(saved_args) == 1 and saved_args[0] is not None
+    assert saved_args[0].get("will-retry") == _sha256(sk)
+
+
+def test_save_state_writes_given_dict_and_reports_oserror(fake_sync, tmp_path):
+    """`_save_state(scan_state)` 写传入 dict（不动内存）、带 `_notes`、返回 True；
+    OSError → 返回 False；无参调用仍写当前内存（watchdog 路径语义不变）。"""
+    sync, _ = fake_sync
+    sync._last_notes_scan = {"note-1": "h1"}
+
+    assert sync._save_state({"pending": "pend-hash"}) is True
+    data = json.loads(sync._state_file.read_text(encoding="utf-8"))
+    assert data == {"pending": "pend-hash", "_notes": {"note-1": "h1"}}
+    assert sync._last_scan == {}  # 未提交内存，由调用方决定
+
+    with sync._lock:
+        sync._last_scan = {"mem-only": "mem-hash"}
+    assert sync._save_state() is True  # 无参 → 写当前内存
+    data = json.loads(sync._state_file.read_text(encoding="utf-8"))
+    assert data == {"mem-only": "mem-hash", "_notes": {"note-1": "h1"}}
+
+    # 写盘失败：state_file 的父路径是普通文件 → mkdir 抛 OSError → False
+    blocker = tmp_path / "blocker"
+    blocker.write_text("not a dir", encoding="utf-8")
+    sync._state_file = blocker / "skill_sync_state.json"
+    assert sync._save_state({"x": "y"}) is False

@@ -414,18 +414,32 @@ class SkillSync:
             logger.warning(f"[SkillSync] State file corrupt or unreadable for notes, starting fresh: {e}")
         return {}
 
-    def _save_state(self) -> None:
-        """将当前内存状态持久化到磁盘（异常保护）"""
+    def _save_state(self, scan_state: dict | None = None) -> bool:
+        """将状态持久化到磁盘（异常保护）。
+
+        Args:
+            scan_state: 要写入的 skills 状态；None 时写当前内存 `_last_scan`
+                （watchdog 路径先改内存再调用，语义不变）。scan_and_sync
+                必须传入 next_scan——它尚未提交到内存，只写内存会把
+                本轮新增/更新/删除丢掉。
+
+        Returns:
+            True 写入成功；False 写入失败（OSError），调用方据此不推进内存，
+            下一轮扫描重试。
+        """
         try:
             self._state_file.parent.mkdir(parents=True, exist_ok=True)
             with self._lock:
-                data = {**self._last_scan, "_notes": self._last_notes_scan}
+                skills = dict(scan_state) if scan_state is not None else self._last_scan
+                data = {**skills, "_notes": self._last_notes_scan}
             self._state_file.write_text(
                 json.dumps(data, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
+            return True
         except OSError as e:
             logger.warning(f"[SkillSync] Failed to save state file: {e}")
+            return False
 
     def scan_and_sync(self) -> tuple[int, int, int]:
         """
@@ -440,6 +454,8 @@ class SkillSync:
 
         无变化不写盘：入口对 _last_scan + _last_notes_scan 做深拷贝快照，
         出口对比是否变化，无变化跳过 _save_state（避免每分钟无意义重写）。
+        有变化时 `_save_state(next_scan)` 先把**本轮结果**写盘，成功才把内存
+        `_last_scan` 提交为 next_scan；写盘失败则内存不动，下轮扫描重试。
 
         Returns:
             (added, updated, deleted) 计数；若 LightRAG 不可用返回 (-1, -1, -1)
@@ -631,12 +647,16 @@ class SkillSync:
             notes_changed = self._last_notes_scan != notes_snapshot_before
 
         if skills_changed or notes_changed:
-            # 写盘成功后才更新内存，避免 _save_state 抛 OSError 时
-            # 内存已改但磁盘未改，下次 scan 入口快照读到新内存状态，
-            # 出口对比"无变化"不写盘，磁盘永远旧状态
-            self._save_state()
-            with self._lock:
-                self._last_scan = next_scan
+            # 先写盘（把本轮 next_scan 直接落磁盘，而非尚未提交的内存），
+            # 成功后才更新内存：
+            # - 旧顺序 _save_state() 写的是旧内存，新增/更新/删除只活在内存里，
+            #   进程重启后磁盘缺条目（如 ego-browser 在 KG 不在 state.json），
+            #   下一轮扫描把它当新增重注；watchdog 路径顺手补写才掩盖了该 bug。
+            # - _save_state 抛 OSError 时内存不推进，避免磁盘永远旧状态。
+            # notes_changed-only 时 next_scan == 入口快照，写盘同样把 notes 落盘。
+            if self._save_state(next_scan):
+                with self._lock:
+                    self._last_scan = next_scan
 
         return added, updated, deleted
 
