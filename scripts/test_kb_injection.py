@@ -11,6 +11,7 @@
 
 import requests
 import json
+from pathlib import Path
 
 def test_kb_search():
     """测试知识库搜索 API"""
@@ -102,7 +103,7 @@ def test_kb_injection():
 
         print(f"\n执行任务: {task.strip()}")
         print("\n提示：查看日志以验证知识库注入")
-        print("   tail -f <repo-root>/logs/api_stderr.log | grep 'kb-'")
+        print(f"   tail -f {Path(__file__).resolve().parents[1] / 'logs' / 'api_stderr.log'} | grep 'kb-'")
 
         response = requests.post(
             "http://localhost:38402/execute",

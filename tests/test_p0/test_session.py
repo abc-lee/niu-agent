@@ -4,10 +4,12 @@ import os
 import sys
 import tempfile
 
+from pathlib import Path
+
 import aiosqlite
 import pytest
 
-sys.path.insert(0, "<repo-root>")
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from agent.session import MessageStore
 

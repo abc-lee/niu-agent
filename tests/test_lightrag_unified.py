@@ -694,7 +694,7 @@ class TestToolAliasesNoLegacyServers:
         """_TOOL_ALIASES must not contain any key starting with 'vector-store/'."""
         import sys
 
-        sys.path.insert(0, "<repo-root>")
+        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         from agent.handler import NiuHandler
 
         vs_keys = [k for k in NiuHandler._TOOL_ALIASES if k.startswith("vector-store/")]
@@ -707,7 +707,7 @@ class TestToolAliasesNoLegacyServers:
         """_TOOL_ALIASES must not contain any key starting with 'kg-server/'."""
         import sys
 
-        sys.path.insert(0, "<repo-root>")
+        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         from agent.handler import NiuHandler
 
         kg_keys = [k for k in NiuHandler._TOOL_ALIASES if k.startswith("kg-server/")]
@@ -724,7 +724,7 @@ class TestDeletedVectorStoreAndKGServer:
     no remnants (directories, modules, or imports) remain in the codebase.
     """
 
-    PROJECT_ROOT = "<repo-root>"
+    PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
     def test_vector_store_directory_does_not_exist(self):
         """mcp-servers/vector-store/ directory must not exist."""

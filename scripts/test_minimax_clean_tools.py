@@ -13,7 +13,7 @@ import json
 import litellm
 from datetime import datetime
 
-LOG_FILE = f"<repo-root>/logs/minimax_clean_test_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+LOG_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs", f"minimax_clean_test_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
 
 def log(msg):
     ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]

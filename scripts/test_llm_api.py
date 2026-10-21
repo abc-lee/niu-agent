@@ -3,9 +3,10 @@ Test LLM API configuration
 """
 import urllib.request
 import json
+from pathlib import Path
 
 # Load config
-with open('<repo-root>/config/user-config.json', encoding='utf-8') as f:
+with open(Path(__file__).resolve().parents[1] / "config" / "user-config.json", encoding='utf-8') as f:
     config = json.load(f)
 
 llm = config['llm']

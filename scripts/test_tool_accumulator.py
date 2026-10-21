@@ -19,7 +19,7 @@ if not MINIMAX_API_KEY:
     sys.exit(0)
 API_BASE = "https://api.minimaxi.com/anthropic/v1/messages"
 
-LOG_FILE = f"<repo-root>/logs/tool_accumulator_test_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+LOG_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs", f"tool_accumulator_test_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
 
 def log(msg):
     ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]

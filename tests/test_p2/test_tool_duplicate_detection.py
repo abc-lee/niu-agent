@@ -1,9 +1,10 @@
 """P2-1: 测试工具重复调用检测"""
 import sys
 
+from pathlib import Path
 import pytest
 
-sys.path.insert(0, "<repo-root>")
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from agent.handler import NiuHandler
 

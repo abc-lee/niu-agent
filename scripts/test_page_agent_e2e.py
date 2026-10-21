@@ -6,9 +6,9 @@ import json
 import time
 import sys
 
+from pathlib import Path
 # Add path to niu_page_agent module
-sys.path.insert(0, 'E:\\tools\\ai-bot\\mcp-servers\\page-agent-mcp\\src')
-
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "mcp-servers" / "page-agent-mcp" / "src"))
 from niu_page_agent import get_status, execute_task, stop_task
 
 def test_extension_connection():

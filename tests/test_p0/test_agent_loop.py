@@ -1,10 +1,11 @@
 """P0-6: 测试 JSON 解析异常处理"""
 import json
 import sys
+from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, "<repo-root>")
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from agent.generic.llmcore import MockResponse, MockToolCall
 

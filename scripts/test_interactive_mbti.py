@@ -11,7 +11,8 @@
 import sys
 import json
 import time
-sys.path.insert(0, 'E:\\tools\\ai-bot\\mcp-servers\\page-agent-mcp\\src')
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "mcp-servers" / "page-agent-mcp" / "src"))
 
 from niu_page_agent import execute_task, get_status
 

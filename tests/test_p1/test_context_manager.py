@@ -2,10 +2,11 @@
 import os
 import sys
 import tempfile
+from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, "<repo-root>")
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from agent.context_manager import ContextManager, get_context_manager, reset_context_manager
 from agent.session import MessageStore

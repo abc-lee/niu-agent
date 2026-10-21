@@ -7,7 +7,7 @@ import pytest
 
 pytestmark = pytest.mark.skip(reason="ExperienceSummarizer disabled — skill writing now handled by dream-evolver")
 
-sys.path.insert(0, "<repo-root>")
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from agent.experience_summarizer import (  # noqa: E402
     ExperienceContext,

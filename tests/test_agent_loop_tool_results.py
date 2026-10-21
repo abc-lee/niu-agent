@@ -9,12 +9,13 @@
 """
 import copy
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
 
-sys.path.insert(0, "<repo-root>")
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from agent.generic.agent_loop import StepOutcome, agent_runner_loop
 

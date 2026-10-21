@@ -12,7 +12,7 @@ from playwright.async_api import async_playwright
 sys.stdout.reconfigure(encoding='utf-8')
 
 # 测试配置
-TEST_URL = "file:///<repo-root>/scripts/test-page-agent.html"
+TEST_URL = (Path(__file__).resolve().parent / "test-page-agent.html").as_uri()
 RESULTS_FILE = Path(__file__).parent.parent / "docs" / "page-agent-test-results.json"
 
 
