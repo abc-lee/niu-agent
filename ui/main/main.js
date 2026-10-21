@@ -1622,6 +1622,21 @@ ipcMain.handle('get-config', () => {
   };
 });
 
+// Chat 页系统语音朗读配置（plan: docs/superpowers/plans/2026-10-20-chat-tts-system-voice.md）
+// 只读 user-config.json 的顶层 tts 段；缺省=关闭；任何异常都返回缺省（渲染端永不 await 失败）。
+ipcMain.handle('get-tts-config', () => {
+  const defaults = { enabled: false, provider: 'system', voice: '', rate: 1.0 };
+  try {
+    if (fs.existsSync(userConfigPath)) {
+      const cfg = JSON.parse(fs.readFileSync(userConfigPath, 'utf-8'));
+      if (cfg && typeof cfg === 'object' && cfg.tts && typeof cfg.tts === 'object' && !Array.isArray(cfg.tts)) {
+        return { ...defaults, ...cfg.tts };
+      }
+    }
+  } catch (e) { console.error('Failed to read tts config:', e); }
+  return defaults;
+});
+
 // C2 薄壳：payload = {configName, formValues, probeResults, loadedNamedEntry}
 // 核心逻辑在 lib/save-config.js（双写 + reload 一次）；notifyReload 注入现有 HTTP fire-and-forget。
 ipcMain.handle('save-config', (event, payload) => {
@@ -2532,6 +2547,18 @@ function startMessageEventStream() {
               // 用户发消息代表已看到报警内容，无论本地还是飞书都应取消
               if (event.role === 'user' && spiritWindow && !spiritWindow.isDestroyed()) {
                 spiritWindow.webContents.send('cancel-alert');
+              }
+            } else if (event.type === 'tts_event') {
+              // Chat 页系统语音朗读（spec v2.1 I-3）：独立事件通道，new_message 载荷/行为不变。
+              // final=true 即本轮最终回复（工具锚点行不朗读），由渲染端决定是否朗读。
+              if (chatWindow && !chatWindow.isDestroyed()) {
+                chatWindow.webContents.send('tts-event', {
+                  id: event.id,
+                  role: event.role,
+                  content: event.content,
+                  final: event.final === true,
+                  source: event.source
+                });
               }
             } else if (event.type === 'tool_status') {
               // 转发工具调用状态到聊天窗口

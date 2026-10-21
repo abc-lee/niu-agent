@@ -922,6 +922,9 @@ class NiuRunner:
         self._current_channel_id = ""
         self._im_channel_id = ""  # IM 通道继承：记录最近真实用户消息/定时任务的 channel_id
         self._im_force = False  # IM 强制标志：定时任务/后台触发置 True；仅 Electron 用户消息置 False
+        # 本回合入站是否来自 IM（只看显式 channel_id，不看粘性 _im_channel_id）——
+        # _persist_one_msg 的 tts_event 拷贝用它决定是否朗读
+        self._is_im_turn = False
         self._request_source = "user"  # 当前请求来源（scheduler/ha-watcher 触发时 chat_queue 置 "scheduler"；停止隔离用）
 
         # 首轮 resources 注入（拖入文件模式要求），_on_before_llm turn==1 时合并进 injection 后清空
@@ -2187,6 +2190,9 @@ class NiuRunner:
             history: 可选的历史消息列表
         """
         logger.info(f"[Runner] chat() called, session_id={session_id}, input={user_input[:50]}")
+        # 必须在粘性继承之前取值：scheduler/后台触发显式 channel_id 为空，
+        # 即使有粘性 _im_channel_id 也不算入站 IM 回合（否则 Chat 页不朗读）
+        self._is_im_turn = bool(channel_id)
         if not channel_id and self._im_channel_id:
             channel_id = self._im_channel_id
         self._current_channel_id = channel_id
@@ -2428,7 +2434,7 @@ class NiuRunner:
         Returns:
             消息 ID，或 None（写入失败或消息被过滤）
         """
-        from niu_api.chat import notify_new_message_sync
+        from niu_api.chat import notify_new_message_sync, notify_tts_event_sync
 
 
         role = msg_dict.get("role", "")
@@ -2493,6 +2499,12 @@ class NiuRunner:
         # 通知 SSE（仅 assistant 消息推送给前端）
         if role == "assistant" and content.strip():
             notify_new_message_sync(msg_id, "assistant", content, source="electron")
+
+            # tts_event（spec 2026-10-20）：Chat 页系统语音朗读的独立事件分支，
+            # new_message 不变。入站 IM 回合不发（飞书已推卡片）；
+            # final = 无 tool_calls，即本轮最终回复（工具锚点行不朗读）。
+            if not getattr(self, "_is_im_turn", False):
+                notify_tts_event_sync(msg_id, "assistant", content, final=not bool(tool_calls), source="electron")
 
             # IM Gateway 流式推送已通过 reply chunk 路径（行 1849）发送完整内容，
             # 此处不再发空信号（避免冗余 CardKit API 调用）

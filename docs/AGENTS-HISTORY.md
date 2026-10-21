@@ -8,6 +8,20 @@
 
 ---
 
+### 2026-10-21
+
+#### Chat 页系统语音朗读（阶段一，独立 `tts_event`，VERSION 0.5.6）
+
+- **方案**：新增独立 SSE 事件 `tts_event`（`{type,id,role,content,final,source}`），不改 `new_message`/DB/IM；渲染端只消费 `role=assistant && final=true && source=electron`，按 id 去重。
+- **后端**：`agent/runner._persist_one_msg` 在 assistant 有内容且 per-turn `_is_im_turn=false` 时发 `tts_event`，`final=not bool(tool_calls)`；`_is_im_turn` 在粘性 `_im_channel_id` 继承前按显式 `channel_id` 设置（scheduler 不误伤，IM 入站不发）。`chat.py` 两处 `full_reply` 兜底**不发** `tts_event`（停止/异常窗口不朗读）。
+- **渲染端**：`main.js` 转发 `tts-event` + `get-tts-config`；`preload-chat.js` 暴露 `onTtsEvent/getTtsConfig`；`chat-tts.js` 事件驱动朗读，3s utterance watchdog + `advance` 单次闩锁，50ms 代际检查；`chat-tts-text.js` 纯清洗/分句/rate/音色（pickVoice 三遍 zh-only）。停止按钮改 `is-idle`（不用 native disabled，保留子 Agent tab 停止与双击 `/stop_all`）；迷你态进入停、退出 refresh。
+- **配置/手册**：`~/.niu/config/user-config.json` 顶层 `tts`（`enabled/provider/voice/rate`，默认 false）；`docs/SYSTEM_MANUAL.md` 新增「语音朗读（TTS，系统语音）」节。
+- **验证**：`node --test tests/test_chat_tts_text.js` 5 passed；`pytest tests/test_tts_event_bridge.py -q` 1 passed；main/preload/chat-tts/chat-tts-text `node --check` OK；`git diff --check` clean；质量审查 APPROVE（仅 P3 pendingTts 单槽）。
+- **真机 AC（macOS，2026-10-21 08:40 左右）**：`/api/chat/session` 返回「TTS 验收测试。」（HTTP 200，message id `2a322a0d-56f8-4695-b445-0265c50b5383`），用户确认听到系统中文语音；`tts.enabled=true` 保留。Windows 真机未测（无环境），按手册需系统中文语音包。
+- **约束**：未跑全量 pytest；实施 Agent 未 commit；夜间未重启，验收时用户已重启。
+
+---
+
 ### 2026-10-20
 
 #### P4：真机验收 + 死模块清理 + 启停/崩溃恢复（main `a002a1ed`）

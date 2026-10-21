@@ -1129,6 +1129,55 @@ curl http://<host>:<port>/props      # 本地 llama.cpp：确认上下文窗口�
 4. **展示图片给用户**：仅在回复中向用户展示图片时用 `![描述](本地绝对路径)` 标记（前端渲染给用户看，不会让模型看到图——模型看图只认 `analyze_image`）
 5. **图文件缺失/已清理** → `analyze_image` 返回明确错误串（不崩溃中断）——重新截屏即可
 
+## 语音朗读（TTS，系统语音）
+
+**一句话**：Chat 页收到最终 assistant 回复时，用操作系统自带中文语音朗读；默认关闭。TTS 走独立的 `tts_event` 分支，不修改 `new_message`、数据库或 IM。
+
+### 配置
+
+`~/.niu/config/user-config.json` 顶层：
+
+```json
+"tts": {
+  "enabled": false,
+  "provider": "system",
+  "voice": "",
+  "rate": 1.0
+}
+```
+
+| 键 | 缺省 | 说明 |
+|----|------|------|
+| `enabled` | `false` | 是否自动朗读 |
+| `provider` | `"system"` | 只有系统语音；Kokoro 属阶段二，未实现 |
+| `voice` | `""` | 空 = 自动选中文；非空按 voiceURI 全等 → name 全等 → name 包含匹配，命中必须是中文音色；无匹配回落自动 |
+| `rate` | `1.0` | 合法 0.5–2.0；缺失/非正数按 1.0，正数越界收敛 |
+
+Chat 载入或重新获得焦点时重新读取配置，改完不必重启 Niu。配置缺失/损坏/`tts` 不是对象时按缺省处理。**设置页没有朗读表单，配置由主 Agent 维护。**
+
+### 朗读范围
+
+- 只读 `_persist_one_msg` 发出的 `tts_event` 中 `role=assistant && final=true && source=electron` 的消息；同 id 只读一次。
+- `final=!tool_calls`：工具轮旁白 `final=false`，不读。
+- 不读历史、流式 token、用户消息、ask_user、子 Agent、`ElectronChannel.push` 程序推送、IM 入站；scheduler/定时任务的最终 assistant 会读。
+- `chat.py` 的停止/异常窗口 `full_reply` 兜底**不发** `tts_event`，该轮不朗读（已知边界）。
+- 清洗代码块、URL、HTML、表格；分句；整条 4000 字上限；纯符号句不读。
+
+### 按钮
+
+输入区右侧竖排：上停止、下朗读图标。停止按钮空闲是 `is-idle` 灰色（不是 native disabled，否则子 Agent tab 点击不派发）：主对话空闲单击 no-op，忙碌可停；子 Agent tab 仍可停；双击 `/stop_all` 始终有效；`/clear` 不改变按钮状态；ESC 用 `isProcessing`。
+
+朗读按钮只控制本窗口运行时开关，不写配置；配置在载入/聚焦时权威。迷你态不朗读：进入 `applyMiniDom` 即停，退出刷新配置。
+
+### 平台
+
+- macOS：`say -v '?'` 查中文语音名，填 `voice`。
+- Windows：先装系统中文语音包；没有中文语音或语音列表为空时按钮置灰 + title 提示，不用英文硬读。
+
+### 阶段二
+
+Kokoro/ONNX 本地模型语音尚未实现；`provider` 目前只有 `system`。
+
 ## 文本编码
 
 **现象**：Windows 上工具输出/剪贴板读写的中文乱码、日志出现 `UnicodeDecodeError`、或日志里中文被转义成 `\uXXXX`。根源是 Python 默认文本编码跟随系统 locale（Windows = ANSI code page），解不了 UTF-8 的中文字节——cp1252 机器直接报错，cp936 机器静默乱码（更隐蔽）。

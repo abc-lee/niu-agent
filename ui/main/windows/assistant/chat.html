@@ -392,6 +392,27 @@
       cursor: not-allowed;
       transform: none;
     }
+    /* 侧栏按钮组（plan: docs/superpowers/plans/2026-10-20-chat-tts-system-voice.md Task 2）：
+       停止按钮常驻可见——空闲用 .is-idle 视觉态（不用 native disabled，点击仍需可达双击语义）；
+       高度由 JS 量取发送按钮后写入 --side-buttons-height。 */
+    .side-buttons {
+      display: flex; flex-direction: column; align-items: center;
+      align-self: flex-start; gap: 2px;
+      height: var(--side-buttons-height, 42px); flex: none;
+    }
+    .side-buttons button {
+      width: 20px; height: 20px; padding: 0; flex: none; border-radius: 50%;
+      display: flex; align-items: center; justify-content: center; box-shadow: none;
+    }
+    .side-buttons .stop-btn { background: #e74c3c; color: #fff; border: none; cursor: pointer; }
+    .side-buttons .stop-btn:hover { background: #c0392b; }
+    .side-buttons .stop-btn.is-idle { background: #d8d8d8; color: #999; cursor: not-allowed; transform: none; box-shadow: none; }
+    .side-buttons .stop-btn.is-idle:hover { background: #d8d8d8; }
+    .side-buttons button:hover { transform: none; box-shadow: none; }
+    .side-buttons .tts-btn { background: transparent; color: #999; border: 1px dashed rgba(0,0,0,.18); cursor: pointer; }
+    .side-buttons .tts-btn:hover { color: #5a8f9c; border-color: #78b2be; }
+    .side-buttons .tts-btn.active { color: #1a6b78; background: rgba(120,178,190,.25); border: 1px solid #78b2be; }
+    .side-buttons .tts-btn:disabled { background: transparent; color: #ccc; border-color: rgba(0,0,0,.08); cursor: not-allowed; }
     .stop-btn {
       background: #e74c3c;
       color: white;
@@ -1238,7 +1259,16 @@
     <div class="input-area">
       <textarea id="user-input" placeholder="说点什么..." rows="1"></textarea>
       <button id="send-btn">发送</button>
-      <button class="stop-btn" id="stop-btn" style="display:none;" title="停止生成 (/stop)">■</button>
+      <div class="side-buttons">
+        <button class="stop-btn is-idle" id="stop-btn" title="停止生成 (/stop)" aria-disabled="true">
+          <svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+        </button>
+        <button class="tts-btn" id="tts-btn" aria-pressed="false" title="朗读：关">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M4 9.5h3.5L11.5 6v12L7.5 14.5H4z"/><path d="M15 9.8a3.4 3.4 0 0 1 0 4.4"/>
+          </svg>
+        </button>
+      </div>
       <div class="slash-dropdown" id="slash-dropdown">
         <div class="slash-dropdown-item" data-cmd="/new">
           <span class="cmd-name">/new</span>
@@ -1327,6 +1357,17 @@
     const personCount = document.getElementById('person-count');
     const noteCount = document.getElementById('note-count');
     const graphBtn = document.getElementById('graph-btn');
+
+    // ========== 侧栏按钮（停止/朗读）初始化（Task 2）==========
+    // 停止按钮常驻显示：空闲态用 is-idle 视觉 + aria-disabled，永不用 native disabled/隐藏，
+    // 这样单击/双击语义（双击 = /stop_all）在空闲时依然可达。
+    // 组高度取发送按钮实测高（缺省 42px 兜底），与 textarea 顶端对齐。
+    const ttsBtn = document.getElementById('tts-btn');
+    stopBtn.classList.add('is-idle');
+    stopBtn.setAttribute('aria-disabled', 'true');
+    const defaultSendHeight = Math.max(42, Math.round(sendBtn.getBoundingClientRect().height));
+    document.documentElement.style.setProperty('--side-buttons-height', defaultSendHeight + 'px');
+    if (ttsBtn) ttsBtn.addEventListener('click', () => { if (window.NiuTts) window.NiuTts.toggle(); });
 
     // 版本号填充：单一真相源=仓库根 VERSION 文件（preload-chat.js 读入暴露为 APP_VERSION；读失败兜底 dev）
     // 锚点钉死在 body 尾部主脚本——head 内字体 IIFE 执行时 body 未解析，querySelector 会 null
@@ -1519,6 +1560,8 @@
     const STOP_DOUBLE_CLICK_WINDOW = 400; // ms
 
     stopBtn.addEventListener('click', () => {
+      // 任何停止动作先掐掉正在念的语音（含双击/子 Agent tab；idle 空单击也停——朗读中说明有活动）
+      if (window.NiuTts) window.NiuTts.stop();
       if (stopClickFired) {
         // 双击刚触发，400ms 内的后续点击忽略
         return;
@@ -1543,6 +1586,9 @@
             }
             return;
           }
+          // 空闲态（is-idle）：单击无对象可停 ⇒ no-op（不停主 Agent、不弹子 Agent 提示）。
+          // 不在 click 入口加 idle 守卫——那会连带挡掉双击的 /stop_all（无条件语义）。
+          if (stopBtn.classList.contains('is-idle')) return;
           // 单击超时：只停主 Agent
           window.electronAPI.sendMessage('/stop').catch(e => console.error('停止主 Agent 失败:', e));
           // 提示用户还有子 Agent 在跑（如果有）—— Task 13 实现
@@ -1746,6 +1792,8 @@
       slashJustSelected = false;  // 重置哨兵：选中后回车执行，防止下次输入 / 时不弹出
       const text = userInput.value.trim();
       if (!text) { userInput.style.height = 'auto'; return; }
+      // 新一轮发送前掐掉正在念的语音（必须在子 Agent tab 早退之前，两条路径都要停）
+      if (window.NiuTts) window.NiuTts.stop();
       sendBtn.disabled = true;
 
       // ===== 子 Agent tab 分支（§5.6）：必须在 addMessage('user') / showTyping() 之前 early return =====
@@ -1796,6 +1844,8 @@
     // 取值/清空/focus 等 DOM 副作用一律留在各调用点——防迷你发送抹掉大窗未发草稿、
     // 防 focus 拉回已隐藏的主输入框。
     async function sendMainMessage(text, focusFn = null) {
+      // 主对话路径（含迷你发送）任何一次发送都先停朗读
+      if (window.NiuTts) window.NiuTts.stop();
       // /stop 指令 - 停止当前 Agent 工作（允许在 isProcessing=true 时执行）
       if (text === '/stop') {
         sendBtn.disabled = false;
@@ -1811,7 +1861,7 @@
       // /clear 指令 - 已随压缩体系退役（T6）：等价 /new，直接清空不再先整理
       // /new 指令 - 清空聊天记录
       if (text === '/clear' || text === '/new') {
-        stopBtn.style.display = 'none';
+        // 停止按钮常驻可见：/clear、/new 不再改写显隐，也不动 is-idle（视觉态归 chat_idle/chat_busy 管）
         sendBtn.disabled = false;
         await clearChat();
         return false;
@@ -1871,7 +1921,7 @@
       } finally {
         // chat 窗口 UI 状态（hideTyping/stopBtn/isProcessing）由 SSE chat_idle 驱动
         // 见缝插针场景下 HTTP 立即返回但 Agent 仍在跑，此处不能重置 chat UI 状态
-        // 否则会把停止按钮误隐藏、Escape 失效、/clear 误走空闲分支
+        // 否则会把停止按钮误置空闲态（is-idle）、Escape 失效、/clear 误走空闲分支
         //
         // 但 notifyBusy(false, 'chat') 必须在此处调用——它配对的是
         // chat.html:922 sendMessage 入口的 notifyBusy(true, 'chat')，属于
@@ -2257,6 +2307,8 @@
       }, 600);
       document.documentElement.style.background = 'transparent';  // I3：清页面层 html 背景（exit 成对还原）
       document.body.classList.add('mini');
+      // 进迷你即停朗读：迷你幕墙不承载朗读状态，避免长句在收起后继续念
+      if (window.NiuTts) window.NiuTts.stop();
       updateMiniMessage();
     }
 
@@ -2285,7 +2337,7 @@
     // 迷你态 webContents 重载自愈（devtools reload / 崩溃自动重载）：渲染端丢 body.mini 而主进程仍 miniActive →
     // 主进程 chat-mini-enter 命中「已激活」早退时发该事件；重新应用迷你 DOM 态 + 重测上报（免用户点两次，幂等去重）
     if (window.electronAPI.onMiniStateSync) {
-      window.electronAPI.onMiniStateSync(() => { applyMiniDom().then(reportMiniHeight); });
+      window.electronAPI.onMiniStateSync(() => { applyMiniDom().then(() => { if (window.NiuTts) window.NiuTts.stop(); reportMiniHeight(); }); });
     }
 
     function exitMini() {
@@ -2315,6 +2367,8 @@
       // 主进程 chat-mini-exit handler 锁定与基线逐字一致（结构门禁）不含窗口级调用，故此为还原唯一通道。
       window.electronAPI.setMiniHover(true);
       document.body.classList.remove('mini');
+      // 退出迷你：重新读取 tts 配置并复位按钮态（不自动重放已停的旧句）
+      if (window.NiuTts) window.NiuTts.refreshConfig();
       // exit 后主列表滚回底部（2026-09-16 真机反馈）：迷你期 .container display:none 期间新增消息的
       // 滚底是 no-op（无布局盒），退出后停在旧底部。双 rAF 等布局回来再滚；主列表 + 当前活动的子 Agent 列表一并回底。
       requestAnimationFrame(() => requestAnimationFrame(() => {
@@ -3415,7 +3469,8 @@
         hideTyping();
         isProcessing = false;
         _miniBusySince = null;  // 迷你三态：本轮处理结束，回显最后一条 Agent 消息
-        stopBtn.style.display = 'none';
+        stopBtn.classList.add('is-idle');
+        stopBtn.setAttribute('aria-disabled', 'true');
         sendBtn.disabled = false;
         window.electronAPI.notifyBusy(false, 'chat');
         scheduleMiniUpdate();
@@ -3423,7 +3478,8 @@
         // Agent循环开始：通知 spirit 进入忙碌状态
         isProcessing = true;
         _miniBusySince = Date.now();  // 迷你三态：SSE 驱动的处理轮开始（自动触发场景，无本地 showTyping）
-        stopBtn.style.display = 'flex';
+        stopBtn.classList.remove('is-idle');
+        stopBtn.setAttribute('aria-disabled', 'false');
         window.electronAPI.notifyBusy(true, 'chat');
         scheduleMiniUpdate();
       } else {
@@ -3442,12 +3498,14 @@
           _showMcpLoadFailures(status.mcp_load_failures);
         }
         if (status && status.busy) {
-          stopBtn.style.display = 'flex';
+          stopBtn.classList.remove('is-idle');
+          stopBtn.setAttribute('aria-disabled', 'false');
           isProcessing = true;
           sendBtn.disabled = true;
           scheduleMiniUpdate();  // 迷你三态：兜底轮询改写了 isProcessing，同步迷你区（SSE 漏事件时不滞后）
         } else {
-          stopBtn.style.display = 'none';
+          stopBtn.classList.add('is-idle');
+          stopBtn.setAttribute('aria-disabled', 'true');
           isProcessing = false;
           sendBtn.disabled = false;
           // SSE 断连修复：后端报告空闲，但 spirit busyCount 可能因 chat_idle 丢失而卡 >0
@@ -3468,8 +3526,9 @@
           hideSlashDropdown();
           return;
         }
-        if (isProcessing && stopBtn.style.display === 'flex') {
+        if (isProcessing) {
           e.preventDefault();
+          if (window.NiuTts) window.NiuTts.stop();
           window.electronAPI.sendMessage('/stop');
         }
       }
@@ -4124,6 +4183,9 @@
 
     // ===== 子 Agent Tab 管理结束 =====
   </script>
+  <!-- 系统语音朗读（plan: docs/superpowers/plans/2026-10-20-chat-tts-system-voice.md）：纯文本助手必须先于朗读器 -->
+  <script src="chat-tts-text.js"></script>
+  <script src="chat-tts.js"></script>
   <!-- 磨砂模糊观测层（2026-09-16，plan: docs/superpowers/plans/2026-09-16-winfx-integration.md §4）：只读观测 + IPC 上报 -->
   <script src="mini-blur-observer.js"></script>
 </body>

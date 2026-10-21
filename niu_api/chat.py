@@ -155,6 +155,49 @@ def notify_new_message_sync(message_id: str, role: str, content: str, source: st
         return False
 
 
+async def notify_tts_event(message_id: str, role: str, content: str, final: bool = False, source: str = "electron") -> bool:
+    """TTS 专用事件：只复制给 tts_event 消费者，不改变 new_message。"""
+    if not _event_subscribers:
+        return False
+    event = {
+        "type": "tts_event",
+        "id": message_id,
+        "role": role,
+        "content": content,
+        "final": bool(final),
+        "source": source,
+    }
+    delivered = 0
+    for q in _event_subscribers[:]:
+        try:
+            q.put_nowait(event)
+            delivered += 1
+        except asyncio.QueueFull:
+            logger.warning("[SSE] TTS subscriber queue full, skipping event")
+    return delivered > 0
+
+
+def notify_tts_event_sync(message_id: str, role: str, content: str, final: bool = False, source: str = "electron") -> bool:
+    if not _event_subscribers:
+        return False
+    event = {
+        "type": "tts_event",
+        "id": message_id,
+        "role": role,
+        "content": content,
+        "final": bool(final),
+        "source": source,
+    }
+    loop = _main_loop
+    if loop is None or loop.is_closed():
+        return False
+    try:
+        loop.call_soon_threadsafe(_sync_broadcast, event)
+        return True
+    except RuntimeError:
+        return False
+
+
 async def push_ingest_result(file_path: str, error: str = ""):
     """将入库异常写入 message.db 并推送 SSE 通知。
 
