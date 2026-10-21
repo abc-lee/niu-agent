@@ -175,7 +175,7 @@ assert.strictEqual(pure.mediaScoreCutoff([{ name: 'p1' }, { name: 'p2' }]).lengt
 // DOM 时序层，不在本探针范围（由真机 AC 承接）；本方案未触碰该守卫。
 
 // B9/B11 徽标装配：无分数的合成置顶行形态 ⇒ 无徽标；错误/超时/未落定分支文案逐字不变（见 ②③④⑤）
-assert.ok(!item('kg', { name: '<user>', type: 'person' }).includes('entity-score')); // 合成置顶行：无 distance ⇒ 无徽标
+assert.ok(!item('kg', { name: '测试用户', type: 'person' }).includes('entity-score')); // 合成置顶行：无 distance ⇒ 无徽标
 // B10 图谱段有分数 ⇒ 每行带徽标（0.74 形态）
 assert.ok(item('kg', { name: 'a', type: 'person', score: 0.74 }).includes('class="entity-score"'));
 assert.ok(item('kg', { name: 'a', type: 'person', score: 0.74 }).includes('0.74'));

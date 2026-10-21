@@ -14,6 +14,9 @@ import httpx
 from datetime import datetime
 
 MINIMAX_API_KEY = os.getenv("MINIMAX_API_KEY", "")
+if not MINIMAX_API_KEY:
+    print("SKIP: 环境变量 MINIMAX_API_KEY 未设置，跳过本脚本（请先 export MINIMAX_API_KEY）")
+    sys.exit(0)
 API_BASE = "https://api.minimaxi.com/anthropic/v1/messages"
 
 LOG_FILE = f"<repo-root>/logs/tool_accumulator_test_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"

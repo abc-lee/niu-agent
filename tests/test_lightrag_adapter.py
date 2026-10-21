@@ -146,9 +146,9 @@ class TestSanitizeGraphError:
         """绝对路径（/Users/...、~/...、C:\\...）→ ***（不暴露本机目录结构给 LLM）"""
         from niu_api.internal.lightrag_adapter import _sanitize_graph_error
 
-        msg = "Failed to open /Users/<user>/tools/ai-bot/data/vdb_entities.json: no such file; check ~/.niu/storage"
+        msg = "Failed to open /Users/example/tools/ai-bot/data/vdb_entities.json: no such file; check ~/.niu/storage"
         result = _sanitize_graph_error(msg)
-        assert "/Users/<user>" not in result
+        assert "/Users/example" not in result
         assert "~/.niu" not in result
         assert result.count("***") >= 2
 

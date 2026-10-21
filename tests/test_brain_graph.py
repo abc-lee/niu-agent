@@ -62,7 +62,7 @@ class TestMakeEntityName:
     def test_person_entity(self):
         from niu_api.internal.brain_graph import make_entity_name
 
-        assert make_entity_name("person", "LiLei") == "LiLei"
+        assert make_entity_name("person", "WangFang") == "WangFang"
 
     def test_concept_entity(self):
         from niu_api.internal.brain_graph import make_entity_name

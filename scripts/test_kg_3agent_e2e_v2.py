@@ -21,7 +21,7 @@ KG 注入端到端测试脚本 v2 (Agent 2/3 — 测试执行者)
 约束:
   - 不修改任何生产代码
   - 不修改生产图谱数据
-  - 写操作在测试工作目录 REDACTED_WIN_PATH/lightrag_test/
+  - 写操作在测试工作目录 <临时目录>/lightrag_test/（NIU_TEST_DIR 可覆盖）
   - 必须用 networkx.read_graphml() 验证 graphml
   - ToolRegistry 必须初始化 (调用 load_mcp_tools)
 """
@@ -30,15 +30,16 @@ import os
 import sys
 import json
 import time
+import tempfile
 import shutil
 import traceback
 from pathlib import Path
 from datetime import datetime
 
 # ── 路径配置 ──────────────────────────────────────────────────────────
-PROJECT_ROOT = Path("<repo-root>")
-PROD_STORAGE = Path("C:/Users/LiLei/.niu/lightrag_storage")
-TEST_WORKDIR = Path("REDACTED_WIN_PATH/lightrag_test")
+PROJECT_ROOT = Path(os.environ.get("NIU_PROJECT_ROOT", Path(__file__).resolve().parents[1]))
+PROD_STORAGE = Path(os.environ.get("NIU_PROD_STORAGE", Path.home() / ".niu" / "lightrag_storage"))
+TEST_WORKDIR = Path(os.environ.get("NIU_TEST_DIR", tempfile.gettempdir())) / "lightrag_test"
 
 # 添加项目路径 (必须在 import 之前)
 sys.path.insert(0, str(PROJECT_ROOT / "mcp-servers" / "photo-server" / "src"))

@@ -898,12 +898,12 @@ class TestNamePersonKgDescriptionSync:
 
         from niu_photo_server import name_person
 
-        result = name_person("person_010", "<user>")
+        result = name_person("person_010", "测试用户")
 
         mock_edit.assert_called_once()
         kwargs = mock_edit.call_args.kwargs
-        assert kwargs["entity_name"] == "<user>"
-        assert kwargs["description"] == "<user>（person_id=person_010）"
+        assert kwargs["entity_name"] == "测试用户"
+        assert kwargs["description"] == "测试用户（person_id=person_010）"
         assert result["status"] == "success"
         assert result["kg_synced"] is True
         assert result["kg_desc_synced"] is True
@@ -978,13 +978,13 @@ class TestCleanupDeletedPhotosKgFootprint:
         nps._db_path_failed = False
 
     def _seed(self, tmp_path):
-        """<user>出现在两张照片（一张文件已删、一张还在）；未命名人物_9 只在已删照片里。"""
+        """测试用户出现在两张照片（一张文件已删、一张还在）；未命名人物_9 只在已删照片里。"""
         import niu_photo_server as nps
         kept = tmp_path / "IMG_20240102.jpg"
         kept.write_bytes(b"\xff\xd8\xff\xdb" + b"\x00" * 32)
         conn = nps.get_connection()
         conn.execute(
-            "INSERT INTO persons (id, name, auto_label, photo_count) VALUES ('p_lilei', '<user>', 'auto_lilei', 2)"
+            "INSERT INTO persons (id, name, auto_label, photo_count) VALUES ('p_test', '测试用户', 'auto_test', 2)"
         )
         conn.execute(
             "INSERT INTO persons (id, name, auto_label, photo_count) VALUES ('p_unnamed', NULL, '未命名人物_9', 1)"
@@ -998,9 +998,9 @@ class TestCleanupDeletedPhotosKgFootprint:
             "INSERT INTO photos (id, file_path, abstract, kg_synced) VALUES ('ph_keep', ?, '还在的照片', 1)",
             (str(kept),),
         )
-        conn.execute("INSERT INTO faces (id, photo_id, person_id) VALUES ('f1', 'ph_deleted', 'p_lilei')")
+        conn.execute("INSERT INTO faces (id, photo_id, person_id) VALUES ('f1', 'ph_deleted', 'p_test')")
         conn.execute("INSERT INTO faces (id, photo_id, person_id) VALUES ('f2', 'ph_deleted', 'p_unnamed')")
-        conn.execute("INSERT INTO faces (id, photo_id, person_id) VALUES ('f3', 'ph_keep', 'p_lilei')")
+        conn.execute("INSERT INTO faces (id, photo_id, person_id) VALUES ('f3', 'ph_keep', 'p_test')")
         conn.commit()
 
     @patch("niu_api.internal.media_vectors.remove", return_value=True)
@@ -1034,15 +1034,15 @@ class TestCleanupDeletedPhotosKgFootprint:
         conn = nps.get_connection()
         assert conn.execute("SELECT COUNT(*) FROM photos").fetchone()[0] == 1
         assert conn.execute("SELECT COUNT(*) FROM faces").fetchone()[0] == 1
-        assert conn.execute("SELECT photo_count FROM persons WHERE id='p_lilei'").fetchone()[0] == 1
+        assert conn.execute("SELECT photo_count FROM persons WHERE id='p_test'").fetchone()[0] == 1
         # KG 侧：只删照片实体（stem），人物实体名绝不在删除列表里
         deleted_entities = [c.kwargs["entity_name"] for c in mock_del_entity.call_args_list]
         assert deleted_entities == [stem]
-        assert "<user>" not in deleted_entities
+        assert "测试用户" not in deleted_entities
         assert "未命名人物_9" not in deleted_entities
         # depicts 边：照片 → 两个共享人物，各删一条
         rel_pairs = {(c.kwargs["source_entity"], c.kwargs["target_entity"]) for c in mock_del_rel.call_args_list}
-        assert (stem, "<user>") in rel_pairs
+        assert (stem, "测试用户") in rel_pairs
         assert (stem, "未命名人物_9") in rel_pairs
         # A 类 chunk：收到的是归一化路径（正斜杠+小写）
         assert [c.args[0] for c in adapter.delete_chunks_by_source.call_args_list] == [

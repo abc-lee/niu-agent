@@ -690,10 +690,10 @@ mmproj 是 embeddinggemma-2 的多模态投影矩阵（Q8_0 量化，554,821,024
 {"entity_name": "<落盘路径归一化小写后的 stem，如 img_1234>", "file_path": "<该照片落盘后的绝对路径>", "ts": "2026-10-13T12:00:00"}
 ```
 
-  已填示例（照片落盘于 `/Users/<user>/Pictures/20240501_093000.jpg`）：
+  已填示例（照片落盘于 `/path/to/photo.jpg`）：
 
 ```json
-{"entity_name": "20240501_093000", "file_path": "/Users/<user>/Pictures/20240501_093000.jpg", "ts": "2026-10-13T12:00:00"}
+{"entity_name": "photo", "file_path": "/path/to/photo.jpg", "ts": "2026-10-13T12:00:00"}
 ```
 
 工作者标注后的行 = 原三键 + `done: true`（此键**由工作者写入**；手写行不带，见上表）。
@@ -1077,7 +1077,7 @@ curl http://<host>:<port>/props      # 本地 llama.cpp：确认上下文窗口�
 |------|------|
 | `model` | 视觉模型名。**非空才被 `analyze_image` 使用**——该字段为空时本段不生效（主模型也无视觉则 `analyze_image` 返回明确错误提示配置本段） |
 | `apiKey` | API key（空则继承主 llm；本地服务可填任意非空占位如 `sk-local`） |
-| `apiBase` | 服务地址（空则继承主 llm；本地 llama.cpp 形如 `http://<private-IP>:8080/v1`） |
+| `apiBase` | 服务地址（空则继承主 llm；本地 llama.cpp 形如 `http://127.0.0.1:8080/v1`） |
 | `type` | 服务商类型 `openai`/`anthropic`（空则继承主 llm，默认 openai） |
 | `provider` | 提供商标识（空则继承主 llm） |
 | `reasoning_effort` | 推理深度 none/low/medium/high（空 = 模型默认，不强制档位） |
@@ -1091,7 +1091,7 @@ curl http://<host>:<port>/props      # 本地 llama.cpp：确认上下文窗口�
 ```json
 "vision_llm": {
   "model": "qwen38-xl",
-  "apiBase": "http://<private-IP>:8080/v1",
+  "apiBase": "http://127.0.0.1:8080/v1",
   "apiKey": "sk-local"
 }
 ```
@@ -1108,7 +1108,7 @@ curl http://<host>:<port>/props      # 本地 llama.cpp：确认上下文窗口�
 "vision_llm": {
   "models": [
     { "model": "glm-4.6v-flash", "apiBase": "https://open.bigmodel.cn/api/paas/v4", "apiKey": "sk-…" },
-    { "model": "qwen38-xl", "apiBase": "http://<private-IP>:8080/v1", "apiKey": "sk-local" }
+    { "model": "qwen38-xl", "apiBase": "http://127.0.0.1:8080/v1", "apiKey": "sk-local" }
   ]
 }
 ```

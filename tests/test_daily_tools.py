@@ -48,7 +48,7 @@ def test_daily_set_basic_write_preserves_other_fields(memory_path):
     """基本写入：返回形状 {status,key,expires_at} + entry 三字段 + 其余字段逐键深比较保留"""
     seed = {
         "permanent": [{"type": "memory", "content": "旧记忆"}],
-        "identity": {"name": "lilei"},
+        "identity": {"name": "测试用户"},
         "parked": [],
         "user": {"tz": "Asia/Shanghai"},
     }

@@ -36,7 +36,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from niu_api.internal.lightrag_adapter import LightRAGAdapter
 
-PATH = "/users/lilei/photos/20261016_180058.jpg"
+PATH = "/tmp/niu-test/photos/20261016_180058.jpg"
 
 
 def _run_closing(coro, *args, **kwargs):
@@ -212,7 +212,7 @@ class TestDeleteBookkeepingChunks:
         rag = mock_get_rag.return_value = _make_rag(
             {
                 "b0": {
-                    "content": "西柏坡: 西柏坡，河北平山县革命纪念地；<user>2009年6月在此拍摄的老照片已入库",
+                    "content": "西柏坡: 西柏坡，河北平山县革命纪念地；测试用户2009年6月在此拍摄的老照片已入库",
                     "file_path": "custom_kg",
                     "source_id": "custom_kg_西柏坡",
                 }
@@ -232,9 +232,9 @@ class TestDeleteBookkeepingChunks:
         mock_call_async.side_effect = _run_closing
         rag = mock_get_rag.return_value = _make_rag(
             {
-                "out": {"content": "任飞-><user>: 同游西柏坡", "file_path": "custom_kg",
-                        "source_id": "custom_kg_<user>"},
-                "in": {"content": "<user>->任飞: 同游西柏坡", "file_path": "custom_kg",
+                "out": {"content": "任飞->测试用户: 同游西柏坡", "file_path": "custom_kg",
+                        "source_id": "custom_kg_测试用户"},
+                "in": {"content": "测试用户->任飞: 同游西柏坡", "file_path": "custom_kg",
                        "source_id": "custom_kg_任飞"},
             }
         )
@@ -469,11 +469,11 @@ class TestDeleteBookkeepingChunks:
         对该规则零覆盖——默认期望串本就不含 ->）。"""
         mock_call_async.side_effect = _run_closing
         rag = mock_get_rag.return_value = _make_rag(
-            {"b0": {"content": "任飞-><user>: 同游西柏坡", "file_path": "custom_kg",
+            {"b0": {"content": "任飞->测试用户: 同游西柏坡", "file_path": "custom_kg",
                     "source_id": "custom_kg_任飞"}}
         )
         result = LightRAGAdapter().delete_bookkeeping_chunks(
-            "任飞", expected_contents=["任飞-><user>: 同游西柏坡"]
+            "任飞", expected_contents=["任飞->测试用户: 同游西柏坡"]
         )
         assert result["status"] == "ok"
         assert result["matched_ids"] == []

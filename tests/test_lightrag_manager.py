@@ -405,7 +405,7 @@ class TestLlmModelFunc:
                 ):
                     with patch(
                         "niu_api.internal.brain_region_prompt.build_user_info_prompt",
-                        return_value="## 知识图谱所属用户\n\n本知识图谱属于以下用户：\n- 真实姓名：<user>",
+                        return_value="## 知识图谱所属用户\n\n本知识图谱属于以下用户：\n- 真实姓名：测试用户",
                     ):
                         from niu_api.internal.lightrag_manager import _build_llm_model_func
 
@@ -417,7 +417,7 @@ class TestLlmModelFunc:
 
         system_msg = captured_messages[0]
         assert "知识图谱所属用户" in system_msg["content"]
-        assert "真实姓名：<user>" in system_msg["content"]
+        assert "真实姓名：测试用户" in system_msg["content"]
         # 脑区架构与用户信息共存
         assert "大脑区域架构" in system_msg["content"]
 
@@ -489,7 +489,7 @@ class TestLlmModelFunc:
                 ):
                     with patch(
                         "niu_api.internal.brain_region_prompt.build_user_info_prompt",
-                        return_value="## 知识图谱所属用户\n\n本知识图谱属于以下用户：\n- 真实姓名：<user>",
+                        return_value="## 知识图谱所属用户\n\n本知识图谱属于以下用户：\n- 真实姓名：测试用户",
                     ) as mock_user_info:
                         from niu_api.internal.lightrag_manager import _build_llm_model_func
 
@@ -498,7 +498,7 @@ class TestLlmModelFunc:
                             "extract entities",
                             system_prompt=(
                                 "---Role---\nYou are a Knowledge Graph Specialist...\n\n"
-                                "## 知识图谱所属用户\n\n本知识图谱属于以下用户：\n- 真实姓名：<user>"
+                                "## 知识图谱所属用户\n\n本知识图谱属于以下用户：\n- 真实姓名：测试用户"
                             ),
                         )
 

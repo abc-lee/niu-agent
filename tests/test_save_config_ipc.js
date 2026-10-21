@@ -177,7 +177,7 @@ describe('saveConfigAndCollection', () => {
 
   test('⑥user-config.json 的 vision_llm 段保存后保留（恒基底透传落盘）+ 合集条目无 vision_llm', () => {
     const dir = _tmpDir;
-    const vision = { apiKey: 'vk', apiBase: 'http://<private-IP>:8080/v1', model: 'qwen38-xl' };
+    const vision = { apiKey: 'vk', apiBase: 'http://127.0.0.1:8080/v1', model: 'qwen38-xl' };
     writeJson(dir, 'user-config.json', { llm: { apiKey: 'sk-old', model: 'old-model' }, lightrag_llm: {}, vision_llm: vision });
 
     const result = saveConfigAndCollection({

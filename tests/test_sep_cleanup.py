@@ -57,7 +57,7 @@ class TestKgApiFormatDescription:
 
     def test_person_description_sep_cleaned(self):
         from niu_api.kg_api import _format_description
-        desc = "<user>是银行员工<SEP><user>是技术专家"
+        desc = "测试用户是银行员工<SEP>测试用户是技术专家"
         result = _format_description("person", desc)
         assert "<SEP>" not in result
 

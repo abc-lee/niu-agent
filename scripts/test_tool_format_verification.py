@@ -13,7 +13,10 @@ import os
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-API_KEY = "<redacted-secret>"
+API_KEY = os.getenv("MINIMAX_API_KEY", "")
+if not API_KEY:
+    print("SKIP: 环境变量 MINIMAX_API_KEY 未设置，跳过本脚本（请先 export MINIMAX_API_KEY）")
+    sys.exit(0)
 BASE_URL = "https://api.minimaxi.com/anthropic/v1/messages"
 MODEL = "MiniMax-M2.7-highspeed"
 

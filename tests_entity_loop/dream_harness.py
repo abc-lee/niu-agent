@@ -33,11 +33,11 @@ import tempfile
 import time
 from pathlib import Path
 
-REPO = Path("/Users/<user>/tools/ai-bot")
+REPO = Path(__file__).resolve().parents[1]
 PROMPT_MD = REPO / "config" / "agents" / "dream-evolver.md"
 PROD_STORAGE = Path.home() / ".niu" / "lightrag_storage"
 F3_SOURCE = Path.home() / ".niu" / "md" / "F3_dream_workset.md"
-WORKDIR_F3 = "/Users/<user>/.niu/md/F3_dream_workset.md"  # task 消息里给模型的路径
+WORKDIR_F3 = str(F3_SOURCE)  # task 消息里给模型的路径
 
 
 def log(msg: str) -> None:

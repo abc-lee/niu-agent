@@ -100,10 +100,10 @@ def test_build_user_info_prompt_all_fields_present(tmp_path, monkeypatch):
 
     memory = {
         "user": {
-            "name": "<user>",
+            "name": "测试用户",
             "nickname": "老板",
             "occupation": "IT工程师",
-            "organization": "<org>",
+            "organization": "示例单位",
             "skills": ["CCIE认证"],  # 不应被注入（只取4字段）
         }
     }
@@ -119,10 +119,10 @@ def test_build_user_info_prompt_all_fields_present(tmp_path, monkeypatch):
     result = build_user_info_prompt()
 
     assert "## 知识图谱所属用户" in result
-    assert "真实姓名：<user>" in result
+    assert "真实姓名：测试用户" in result
     assert "称呼：老板" in result
     assert "职业：IT工程师" in result
-    assert "工作单位：<org>" in result
+    assert "工作单位：示例单位" in result
     # skills 不在4字段内，不应出现
     assert "CCIE认证" not in result
 
@@ -182,7 +182,7 @@ def test_user_info_partial_placeholder(tmp_path, monkeypatch):
 
     memory = {
         "user": {
-            "name": "<user>",
+            "name": "测试用户",
             "nickname": "请询问称呼",
             "occupation": "请询问职业",
             "organization": "请询问工作单位",
@@ -200,7 +200,7 @@ def test_user_info_partial_placeholder(tmp_path, monkeypatch):
     result = build_user_info_prompt()
 
     assert "## 知识图谱所属用户" in result
-    assert "真实姓名：<user>" in result
+    assert "真实姓名：测试用户" in result
     # 占位符字段被跳过
     assert "称呼" not in result
     assert "职业" not in result

@@ -115,7 +115,7 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
             "Modes: 'local' (entity-centric), 'global' (overview), 'hybrid' (balanced), "
             "'mix' (KG + vector combined), 'naive' (vector only). "
             "Returns generated text answer or raw context. "
-            "返回的关系中 source/target 前后顺序仅为排序、不代表方向；关系方向语义在 description 文本中（如\"<user> 属于 人际关系脑区\"），解读时以 description 为准。"
+            "返回的关系中 source/target 前后顺序仅为排序、不代表方向；关系方向语义在 description 文本中（如\"示例用户 属于 人际关系脑区\"），解读时以 description 为准。"
         ),
         "input_schema": {
             "type": "object",
@@ -170,7 +170,7 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
             "3. Provide more specific keywords (exact entity names work best)\n"
             "4. Use fields=['entity_name','entity_type'] to get name-only lists without descriptions\n"
             "5. Use lightrag_get_entity_info for single-entity detail instead of broad query\n\n"
-            "返回的关系中 source/target 前后顺序仅为排序、不代表方向；关系方向语义在 description 文本中（如\"<user> 属于 人际关系脑区\"），解读时以 description 为准。"
+            "返回的关系中 source/target 前后顺序仅为排序、不代表方向；关系方向语义在 description 文本中（如\"示例用户 属于 人际关系脑区\"），解读时以 description 为准。"
         ),
         "input_schema": {
             "type": "object",
@@ -245,7 +245,7 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
             "Get a subgraph from the knowledge graph. "
             "action='explore' returns N-layer neighbors of an entity; "
             "action='snapshot' returns full graph for visualization. "
-            "返回的关系中 source/target 前后顺序仅为排序、不代表方向；关系方向语义在 description 文本中（如\"<user> 属于 人际关系脑区\"），解读时以 description 为准。"
+            "返回的关系中 source/target 前后顺序仅为排序、不代表方向；关系方向语义在 description 文本中（如\"示例用户 属于 人际关系脑区\"），解读时以 description 为准。"
         ),
         "input_schema": {
             "type": "object",
@@ -286,7 +286,7 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
         "description": (
             "时间线查询：向量匹配内容 → 遍历时间链 → 按时间戳排序。"
             "用于追踪事件演变、纠正链、因果关系。"
-            "返回的关系中 source/target 前后顺序仅为排序、不代表方向；关系方向语义在 description 文本中（如\"<user> 属于 人际关系脑区\"），解读时以 description 为准。"
+            "返回的关系中 source/target 前后顺序仅为排序、不代表方向；关系方向语义在 description 文本中（如\"示例用户 属于 人际关系脑区\"），解读时以 description 为准。"
         ),
         "input_schema": {
             "type": "object",
@@ -642,7 +642,7 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
 
     "lightrag_get_relation_info": {
         "name": "lightrag_get_relation_info",
-        "description": "Get detailed information of a relationship between two entities. 返回的关系中 source/target 前后顺序仅为排序、不代表方向；关系方向语义在 description 文本中（如\"<user> 属于 人际关系脑区\"），解读时以 description 为准。",
+        "description": "Get detailed information of a relationship between two entities. 返回的关系中 source/target 前后顺序仅为排序、不代表方向；关系方向语义在 description 文本中（如\"示例用户 属于 人际关系脑区\"），解读时以 description 为准。",
         "input_schema": {
             "type": "object",
             "properties": {

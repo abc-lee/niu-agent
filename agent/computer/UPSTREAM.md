@@ -55,8 +55,8 @@
 > 历史教训：本工具曾因"自己发明等价物"12 轮不收敛，改为"逐条照抄 + 偏差登记"后迅速收敛。
 
 ```bash
-UP=/Users/<user>/tools/oh-my-pi                     # 上游只读镜像
-R=/Users/<user>/tools/ai-bot                        # 本仓
+UP=/path/to/oh-my-pi                     # 上游只读镜像
+R=/path/to/ai-bot                        # 本仓
 ```
 
 **S1 取新基线**

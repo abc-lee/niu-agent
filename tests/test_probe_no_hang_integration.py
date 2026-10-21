@@ -10,12 +10,13 @@ TDD：先写覆盖所有可能性的失败测试，再改代码修复。
 
 所有场景期望：≤120s 返回（不卡死），结果合法（supported/probe_failed 之一）。
 
-真实 LLM 调用，需要网络。两个配置文件：
-- /Users/<user>/.niuu/config/user-config.json（豆包 ark-code-latest）
-- /Users/<user>/.niuu/config/user-config - glm.json（GLM xopglm5）
+真实 LLM 调用，需要网络。两个配置文件（默认落在临时测试目录，缺失即 skip）：
+- <临时目录>/niu-test/config/user-config.json（豆包 ark-code-latest）
+- <临时目录>/niu-test/config/user-config - glm.json（GLM xopglm5）
 """
 import asyncio
 import json
+import tempfile
 import time
 from pathlib import Path
 
@@ -24,8 +25,9 @@ import pytest
 pytestmark = pytest.mark.integration
 
 # 测试用的两个真实配置
-DOUBAO_CONFIG_PATH = Path("/Users/<user>/.niuu/config/user-config.json")
-GLM_CONFIG_PATH = Path("/Users/<user>/.niuu/config/user-config - glm.json")
+_TEST_CONFIG_DIR = Path(tempfile.gettempdir()) / "niu-test" / "config"
+DOUBAO_CONFIG_PATH = _TEST_CONFIG_DIR / "user-config.json"
+GLM_CONFIG_PATH = _TEST_CONFIG_DIR / "user-config - glm.json"
 
 # 所有场景 ≤120s 返回（不卡死）
 PROBE_TIMEOUT_SECONDS = 120

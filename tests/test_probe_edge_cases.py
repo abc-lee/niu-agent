@@ -13,14 +13,16 @@ import asyncio
 import json
 import signal
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
 
 PROBE_TIMEOUT_SECONDS = 120
 
-DOUBAO_CONFIG_PATH = Path("/Users/<user>/.niuu/config/user-config.json")
-GLM_CONFIG_PATH = Path("/Users/<user>/.niuu/config/user-config - glm.json")
+_TEST_CONFIG_DIR = Path(tempfile.gettempdir()) / "niu-test" / "config"
+DOUBAO_CONFIG_PATH = _TEST_CONFIG_DIR / "user-config.json"
+GLM_CONFIG_PATH = _TEST_CONFIG_DIR / "user-config - glm.json"
 
 
 def _load_config(path: Path) -> dict:

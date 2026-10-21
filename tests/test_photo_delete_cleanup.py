@@ -85,13 +85,13 @@ def cleanup_env(tmp_path, monkeypatch):
 
 
 def _seed(cleanup_env):
-    """<user>出现在两张照片（一张文件已删、一张还在）；未命名人物_9 只在已删照片里。
+    """测试用户出现在两张照片（一张文件已删、一张还在）；未命名人物_9 只在已删照片里。
     返回 (已删照片路径, 保留照片路径)。"""
     kept = cleanup_env["tmp_path"] / "IMG_20240102.jpg"
     kept.write_bytes(b"\xff\xd8\xff\xdb" + b"\x00" * 32)
     conn = niu_photo_server.get_connection()
     conn.execute(
-        "INSERT INTO persons (id, name, auto_label, photo_count) VALUES ('p_lilei', '<user>', 'auto_lilei', 2)"
+        "INSERT INTO persons (id, name, auto_label, photo_count) VALUES ('p_test', '测试用户', 'auto_test', 2)"
     )
     conn.execute(
         "INSERT INTO persons (id, name, auto_label, photo_count) VALUES ('p_unnamed', NULL, '未命名人物_9', 1)"
@@ -105,9 +105,9 @@ def _seed(cleanup_env):
         "INSERT INTO photos (id, file_path, abstract, kg_synced) VALUES ('ph_keep', ?, '还在的照片', 1)",
         (str(kept),),
     )
-    conn.execute("INSERT INTO faces (id, photo_id, person_id) VALUES ('f1', 'ph_deleted', 'p_lilei')")
+    conn.execute("INSERT INTO faces (id, photo_id, person_id) VALUES ('f1', 'ph_deleted', 'p_test')")
     conn.execute("INSERT INTO faces (id, photo_id, person_id) VALUES ('f2', 'ph_deleted', 'p_unnamed')")
-    conn.execute("INSERT INTO faces (id, photo_id, person_id) VALUES ('f3', 'ph_keep', 'p_lilei')")
+    conn.execute("INSERT INTO faces (id, photo_id, person_id) VALUES ('f3', 'ph_keep', 'p_test')")
     conn.commit()
     return deleted, kept
 

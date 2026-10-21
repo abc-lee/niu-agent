@@ -148,7 +148,7 @@ describe('named-configs', () => {
 // ---------------------------------------------------------------------------
 
 const LLM = { apiKey: 'ka', apiBase: 'http://a/v1', model: 'main-m', type: 'openai' };
-const VISION_A = { apiKey: 'vk', apiBase: 'http://<private-IP>:8080/v1', model: 'qwen38-xl' };
+const VISION_A = { apiKey: 'vk', apiBase: 'http://127.0.0.1:8080/v1', model: 'qwen38-xl' };
 const FORM_VALUES = {
   llm: { apiKey: 'sk-form', apiBase: 'http://form/v1', model: 'form-model', type: 'openai', reasoning_effort: '', maxTokensRaw: '', thinking: '' },
   lightrag: { reasoning_effort: '', temperature: 0.2, thinking: '' },

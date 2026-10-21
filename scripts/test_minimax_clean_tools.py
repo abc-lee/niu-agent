@@ -23,6 +23,9 @@ def log(msg):
         f.write(line + "\n")
 
 MINIMAX_API_KEY = os.getenv("MINIMAX_API_KEY", "")
+if not MINIMAX_API_KEY:
+    print("SKIP: 环境变量 MINIMAX_API_KEY 未设置，跳过本脚本（请先 export MINIMAX_API_KEY）")
+    sys.exit(0)
 
 # 工具schema：只有简单描述，NO <tool_use> 文本示例
 tools = [{

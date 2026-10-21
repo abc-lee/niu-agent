@@ -3036,7 +3036,7 @@ def name_person(person_id: str, name: str) -> dict:
             kg_errors.append(f"KG 改名异常: {e}")
 
         # §2.5: 改名成功后，把 KG 中该人物实体的描述块同步重写为新名字，
-        # 杜绝"KG 描述块仍写旧名"的漂移（§9 实测：abstract 已是「<user>」，
+        # 杜绝"KG 描述块仍写旧名"的漂移（§9 实测：abstract 已是新命名 "<name>"，
         # KG 描述块仍写「未命名人物_1」）。
         # 路径选择：复用 registry 既有 lightrag_edit_entity——只改描述、
         # 不新建实体/边、不重注入照片 chunk；不用 sync_photo_to_kg(force=True)：

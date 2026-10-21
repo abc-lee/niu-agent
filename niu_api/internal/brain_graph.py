@@ -43,7 +43,7 @@ def normalize_name(raw_name: str) -> str:
     for p in parts:
         if not p:
             continue
-        # Capitalize first letter only, preserve rest (LiLei stays LiLei)
+        # Capitalize first letter only, preserve rest (WangFang stays WangFang)
         capitalized.append(p[0].upper() + p[1:] if len(p) > 1 else p.upper())
     name = "_".join(capitalized)
 

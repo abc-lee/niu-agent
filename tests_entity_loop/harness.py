@@ -48,7 +48,7 @@ from pathlib import Path
 
 # ============== 路径常量 ==============
 
-REPO = Path("/Users/<user>/tools/ai-bot")
+REPO = Path(__file__).resolve().parents[1]
 NIU_HOME = Path.home() / ".niu"
 CONFIG_PATH = NIU_HOME / "config" / "user-config.json"
 STORAGE_SRC = NIU_HOME / "lightrag_storage"

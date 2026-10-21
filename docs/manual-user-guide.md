@@ -599,7 +599,7 @@ print(prof.get("reasoning_effort"))               # supported / unsupported 档�
 
 **注意**：并非所有文档格式都支持知识图谱入库，详见下方"1.5 支持的文件格式"。
 
-**关系方向**：图谱关系为无向存储——查询返回的 source/target 顺序不代表方向，方向语义在关系描述文本中（如"<user> 属于 人际关系脑区"）。系统已在工具描述中说明此契约，Agent 会按描述文本解读方向。
+**关系方向**：图谱关系为无向存储——查询返回的 source/target 顺序不代表方向，方向语义在关系描述文本中（如"示例用户 属于 人际关系脑区"）。系统已在工具描述中说明此契约，Agent 会按描述文本解读方向。
 
 **时间链**：会话实体按日期以 `followed_by` 相连（如 `2026-08-08会话 → 2026-08-09会话`），由系统自动补全维护。询问"之前/后来/某天发生了什么"时，可让 Agent 沿时间链查询（timeline_query）或定位对应日期的会话实体展开当天内容。
 
@@ -702,7 +702,7 @@ Niu 有两种入库能力，格式支持范围不同：
 
 | 字段 | 说明 | 示例 |
 |------|------|------|
-| `name` | 用户真实姓名 | <user> |
+| `name` | 用户真实姓名 | 示例用户 |
 | `nickname` | 用户称呼/昵称，主Agent用此称呼用户 | 老板 |
 | `occupation` | 用户职业，影响内容提取和日志编写的专业视角 | 软件工程师 |
 | `organization` | 用户工作单位，影响内容提取和日志编写的专业视角 | 某科技公司 |
@@ -872,7 +872,7 @@ macOS 下构造 `niu.app` bundle（`Info.plist` 含 `LSUIElement=true`），Find
 "vision_llm": {
   "models": [
     { "model": "glm-4.6v-flash", "apiBase": "https://open.bigmodel.cn/api/paas/v4", "apiKey": "sk-…" },
-    { "model": "qwen38-xl", "apiBase": "http://<private-IP>:8080/v1", "apiKey": "sk-local" }
+    { "model": "qwen38-xl", "apiBase": "http://127.0.0.1:8080/v1", "apiKey": "sk-local" }
   ]
 }
 ```

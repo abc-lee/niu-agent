@@ -20,7 +20,7 @@ const FORM = {
   context: {}
 };
 
-const VISION = { apiKey: 'vk', apiBase: 'http://<private-IP>:8080/v1', model: 'qwen38-xl', max_tokens: 8192 };
+const VISION = { apiKey: 'vk', apiBase: 'http://127.0.0.1:8080/v1', model: 'qwen38-xl', max_tokens: 8192 };
 
 test('mergeConfig: fileBase.vision_llm 透传（namedEntry=null，主 Agent 手工配的段保存不丢）', () => {
   const out = mergeConfig({

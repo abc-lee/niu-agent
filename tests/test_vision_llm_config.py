@@ -46,7 +46,7 @@ def test_llm_item_modify_syncs_two_section_snapshot(tmp_config):
     # set_llm_config 不带 presetId → 无同步；手工写 presetId 触发同步路径
     config = _read_config(tmp_config)
     config["llm"]["presetId"] = "本地"
-    config["vision_llm"] = {"model": "qwen38-xl", "apiBase": "http://<private-IP>:8080/v1", "max_tokens": 8192}
+    config["vision_llm"] = {"model": "qwen38-xl", "apiBase": "http://127.0.0.1:8080/v1", "max_tokens": 8192}
     (tmp_config / "user-config.json").write_text(
         json.dumps(config, ensure_ascii=False), encoding="utf-8"
     )
@@ -64,7 +64,7 @@ def test_llm_item_modify_syncs_two_section_snapshot(tmp_config):
     # vision_llm 恒在 user-config.json 顶层：同步后顶层段原样保留（铺场写入）
     assert _read_config(tmp_config)["vision_llm"] == {
         "model": "qwen38-xl",
-        "apiBase": "http://<private-IP>:8080/v1",
+        "apiBase": "http://127.0.0.1:8080/v1",
         "max_tokens": 8192,
     }
 

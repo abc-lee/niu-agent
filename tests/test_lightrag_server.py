@@ -716,20 +716,20 @@ class TestLightragMergeEntities:
         """lightrag_merge_entities should delegate to adapter.merge_entities()."""
         mod = _import_module()
         mock_adapter = MagicMock()
-        mock_adapter.merge_entities.return_value = {"status": "ok", "target_entity": "<user>"}
+        mock_adapter.merge_entities.return_value = {"status": "ok", "target_entity": "测试用户"}
         mod._adapter = mock_adapter
 
         result = mod.lightrag_merge_entities(
             source_entities=["小李", "李某某"],
-            target_entity="<user>",
+            target_entity="测试用户",
         )
 
         mock_adapter.merge_entities.assert_called_once_with(
-            source_entities=["小李", "李某某"], target_entity="<user>",
+            source_entities=["小李", "李某某"], target_entity="测试用户",
             merge_strategy=None, target_entity_data=None,
         )
         assert result["status"] == "ok"
-        assert result["target_entity"] == "<user>"
+        assert result["target_entity"] == "测试用户"
 
     def test_rag_not_available(self):
         """Should return error when LightRAG is not available."""

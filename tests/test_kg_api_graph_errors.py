@@ -313,19 +313,19 @@ def test_search_entities_score_missing_is_none(monkeypatch):
     fake = _FakeAdapter(query_data={
         "status": "success",
         "data": {"entities": [
-            {"entity_name": "<user>", "entity_type": "Person", "description": "person"},
+            {"entity_name": "测试用户", "entity_type": "Person", "description": "person"},
         ]},
     })
     _patch_adapter(monkeypatch, fake)
 
-    resp = _make_client().get("/api/kg/search_entities", params={"query": "<user>", "top_k": 20})
+    resp = _make_client().get("/api/kg/search_entities", params={"query": "测试用户", "top_k": 20})
 
     assert resp.status_code == 200
     entity = resp.json()["entities"][0]
     assert entity["score"] is None
     # 既有字段不受 score 键影响
-    assert entity["id"] == "<user>"
-    assert entity["name"] == "<user>"
+    assert entity["id"] == "测试用户"
+    assert entity["name"] == "测试用户"
     assert entity["entityType"] == "Person"
     assert entity["description"] == "person"
 

@@ -46,8 +46,8 @@ if _SRC not in sys.path:
 # 一条 768 维随机行逐元素 allclose 到固定斜坡图案的概率 ~ 1e-1200，泄漏判定不会假绿。
 MEDIA_ENTITY = "IMG_20260101_120000"
 MEDIA_ENTITY_2 = "IMG_20260102_093000"
-MEDIA_PATH_1 = "/Users/<user>/Pictures/IMG_20260101_120000.jpg"
-MEDIA_PATH_2 = "/Users/<user>/Pictures/IMG_20260102_093000.jpg"
+MEDIA_PATH_1 = "/tmp/niu-test/IMG_20260101_120000.jpg"
+MEDIA_PATH_2 = "/tmp/niu-test/IMG_20260102_093000.jpg"
 _MEDIA_VEC_1 = [2.5 + (i % 8) * 0.25 for i in range(768)]
 _MEDIA_VEC_2 = [1.0 + (i % 5) * 1.0 for i in range(768)]
 # 泄漏扫描的标记集：文件路径 + 实体名（绑定键，D-16）

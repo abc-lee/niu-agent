@@ -114,7 +114,7 @@ def test_set_llm_config_preset_loads_both_sections(tmp_config):
     )
     # user-config.json 顶层 vision_llm（主 Agent 手工配置形态）——整条加载不得改动
     user = _read_user_config(tmp_config)
-    user["vision_llm"] = {"apiKey": "vk", "apiBase": "http://<private-IP>:8080/v1", "model": "qwen38-xl"}
+    user["vision_llm"] = {"apiKey": "vk", "apiBase": "http://127.0.0.1:8080/v1", "model": "qwen38-xl"}
     (tmp_config / "user-config.json").write_text(
         json.dumps(user, ensure_ascii=False, indent=2), encoding="utf-8"
     )
@@ -129,7 +129,7 @@ def test_set_llm_config_preset_loads_both_sections(tmp_config):
     assert config["llm"] == expected_llm
     assert config["lightrag_llm"] == ENTRY_DOUBAO["lightrag_llm"]
     # vision_llm 段不动（加载前后不变——恒在 user-config.json 顶层，不入合集）
-    assert config["vision_llm"] == {"apiKey": "vk", "apiBase": "http://<private-IP>:8080/v1", "model": "qwen38-xl"}
+    assert config["vision_llm"] == {"apiKey": "vk", "apiBase": "http://127.0.0.1:8080/v1", "model": "qwen38-xl"}
 
     # 加载型跳过写后同步：合集条目原样（畸形 presetId 不被刷正）
     assert _read_configs(tmp_config)["豆包"] == ENTRY_DOUBAO
@@ -193,7 +193,7 @@ def test_item_modify_syncs_two_section_snapshot(tmp_config):
     )
     # user-config.json 手工补 vision_llm 段（主 Agent 手工配置形态）——不入快照
     user = _read_user_config(tmp_config)
-    user["vision_llm"] = {"apiKey": "vk", "apiBase": "http://<private-IP>:8080/v1", "model": "qwen38-xl"}
+    user["vision_llm"] = {"apiKey": "vk", "apiBase": "http://127.0.0.1:8080/v1", "model": "qwen38-xl"}
     (tmp_config / "user-config.json").write_text(
         json.dumps(user, ensure_ascii=False, indent=2), encoding="utf-8"
     )

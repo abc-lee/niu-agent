@@ -42,7 +42,7 @@ LLM 提取实体时被约束为上述类型，确保前端分类按钮与图谱�
 
 | 字段 | 说明 |
 |------|------|
-| entity_name | 实体名（自然语言，如 "Python"、"任飞"、"影像记忆脑区"） |
+| entity_name | 实体名（自然语言，如 "Python"、"示例用户"、"影像记忆脑区"） |
 | entity_type | 实体类型（见第三章） |
 | description | 实体描述（向量匹配的主要字段） |
 | source_id | 来源标识 |
@@ -57,7 +57,7 @@ LLM 提取实体时被约束为上述类型，确保前端分类按钮与图谱�
 | description | 关系描述 |
 | weight | 边权重 |
 
-**方向语义**：LightRAG 图为无向图——`src_id`/`tgt_id` 的前后顺序仅为存储排序，**不代表方向**。关系方向语义存在于 `description` 文本中（如 "<user> 属于 人际关系脑区"），模型解读关系方向以 description 为准，不要依据 src/tgt 顺序判断"谁指向谁"。查询工具（query/query_data/get_graph/timeline_query/get_relation_info）返回的关系同理。
+**方向语义**：LightRAG 图为无向图——`src_id`/`tgt_id` 的前后顺序仅为存储排序，**不代表方向**。关系方向语义存在于 `description` 文本中（如 "示例用户 属于 人际关系脑区"），模型解读关系方向以 description 为准，不要依据 src/tgt 顺序判断"谁指向谁"。查询工具（query/query_data/get_graph/timeline_query/get_relation_info）返回的关系同理。
 
 ### 2.3 文档块（chunk）
 
@@ -93,7 +93,7 @@ NanoVectorDB 格式，存储在 `~/.niu/lightrag_storage/` 下：
 | technology | 技术 | 文档入库时 LightRAG 自动提取 |
 | other | 其他 | LLM 无法归类时的兜底类型 |
 
-**实体命名规范**：所有实体名使用自然语言（如 "Python"、"任飞"、"影像记忆脑区"），不使用冒号前缀格式（如 ~~"skill:Python"~~、~~"person:uuid"~~）。`_normalize_entity_name()` 保留为恒等函数做向后兼容。
+**实体命名规范**：所有实体名使用自然语言（如 "Python"、"示例用户"、"影像记忆脑区"），不使用冒号前缀格式（如 ~~"skill:Python"~~、~~"person:uuid"~~）。`_normalize_entity_name()` 保留为恒等函数做向后兼容。
 
 **大小写规范**：写入路径与查询路径均做小写归一化，但归一化时机不同：
 - **写入路径**：LightRAG fork 的所有写入入口（`ainsert_custom_kg`、`acreate_entity`、`acreate_relation`、`_edit_entity_impl`、`_merge_entities_impl`）在落库时对 entity_type 和 keywords 统一 `.lower()`。

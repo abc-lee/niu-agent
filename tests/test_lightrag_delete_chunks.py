@@ -19,7 +19,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from niu_api.internal.lightrag_adapter import LightRAGAdapter
 
-PATH = "/users/lilei/photos/20261014_211832.jpg"
+PATH = "/tmp/niu-test/photos/20261014_211832.jpg"
 
 
 def _run_closing(coro, *args, **kwargs):
