@@ -17,8 +17,9 @@
 - **渲染端**：`main.js` 转发 `tts-event` + `get-tts-config`；`preload-chat.js` 暴露 `onTtsEvent/getTtsConfig`；`chat-tts.js` 事件驱动朗读，3s utterance watchdog + `advance` 单次闩锁，50ms 代际检查；`chat-tts-text.js` 纯清洗/分句/rate/音色（pickVoice 三遍 zh-only）。停止按钮改 `is-idle`（不用 native disabled，保留子 Agent tab 停止与双击 `/stop_all`）；迷你态进入停、退出 refresh。
 - **配置/手册**：`~/.niu/config/user-config.json` 顶层 `tts`（`enabled/provider/voice/rate`，默认 false）；`docs/SYSTEM_MANUAL.md` 新增「语音朗读（TTS，系统语音）」节。
 - **验证**：`node --test tests/test_chat_tts_text.js` 5 passed；`pytest tests/test_tts_event_bridge.py -q` 1 passed；main/preload/chat-tts/chat-tts-text `node --check` OK；`git diff --check` clean；质量审查 APPROVE（仅 P3 pendingTts 单槽）。
-- **真机 AC（macOS，2026-10-21 08:40 左右）**：`/api/chat/session` 返回「TTS 验收测试。」（HTTP 200，message id `2a322a0d-56f8-4695-b445-0265c50b5383`），用户确认听到系统中文语音；`tts.enabled=true` 保留。Windows 真机未测（无环境），按手册需系统中文语音包。
+- **真机 AC（macOS，2026-10-21 08:40 左右）**：`/api/chat/session` 返回「TTS 验收测试。」（HTTP 200，message id `2a322a0d-56f8-4695-b445-0265c50b5383`），用户确认听到系统中文语音；当时临时 `tts.enabled=true` 用于验收，随后按用户要求删除该键。Windows 真机未测（无环境），按手册需系统中文语音包。
 - **约束**：未跑全量 pytest；实施 Agent 未 commit；夜间未重启，验收时用户已重启。
+- **后续简化（同日）**：删除 `tts.enabled`；`tts` 段只保留 `provider/voice/rate`，留给阶段二外挂 TTS。喇叭图标每次 Chat 载入默认关，点击开/关，仅当前窗口生效、不持久化；遗留 `enabled` 键忽略。
 
 ---
 

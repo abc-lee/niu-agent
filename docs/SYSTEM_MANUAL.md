@@ -1131,15 +1131,14 @@ curl http://<host>:<port>/props      # 本地 llama.cpp：确认上下文窗口�
 
 ## 语音朗读（TTS，系统语音）
 
-**一句话**：Chat 页收到最终 assistant 回复时，用操作系统自带中文语音朗读；默认关闭。TTS 走独立的 `tts_event` 分支，不修改 `new_message`、数据库或 IM。
+**一句话**：Chat 页收到最终 assistant 回复时，用操作系统自带中文语音朗读；每次载入 Chat 都是**关**，点输入区朗读图标才开。TTS 走独立的 `tts_event` 分支，不修改 `new_message`、数据库或 IM。
 
 ### 配置
 
-`~/.niu/config/user-config.json` 顶层：
+`~/.niu/config/user-config.json` 顶层——只描述**怎么念**，不含**念不念**（开关在窗口按钮上，不入库）：
 
 ```json
 "tts": {
-  "enabled": false,
   "provider": "system",
   "voice": "",
   "rate": 1.0
@@ -1148,12 +1147,11 @@ curl http://<host>:<port>/props      # 本地 llama.cpp：确认上下文窗口�
 
 | 键 | 缺省 | 说明 |
 |----|------|------|
-| `enabled` | `false` | 是否自动朗读 |
 | `provider` | `"system"` | 只有系统语音；Kokoro 属阶段二，未实现 |
 | `voice` | `""` | 空 = 自动选中文；非空按 voiceURI 全等 → name 全等 → name 包含匹配，命中必须是中文音色；无匹配回落自动 |
 | `rate` | `1.0` | 合法 0.5–2.0；缺失/非正数按 1.0，正数越界收敛 |
 
-Chat 载入或重新获得焦点时重新读取配置，改完不必重启 Niu。配置缺失/损坏/`tts` 不是对象时按缺省处理。**设置页没有朗读表单，配置由主 Agent 维护。**
+Chat 载入或重新获得焦点时重新读取配置（`provider`/`voice`/`rate`），改完不必重启 Niu。配置缺失/损坏/`tts` 不是对象时按缺省处理；段里残留的旧 `enabled` 键一律忽略。该段保留给阶段二外部 TTS（`provider`/`voice`/`rate`）。**设置页没有朗读表单，配置由主 Agent 维护。**
 
 ### 朗读范围
 
@@ -1167,7 +1165,7 @@ Chat 载入或重新获得焦点时重新读取配置，改完不必重启 Niu�
 
 输入区右侧竖排：上停止、下朗读图标。停止按钮空闲是 `is-idle` 灰色（不是 native disabled，否则子 Agent tab 点击不派发）：主对话空闲单击 no-op，忙碌可停；子 Agent tab 仍可停；双击 `/stop_all` 始终有效；`/clear` 不改变按钮状态；ESC 用 `isProcessing`。
 
-朗读按钮只控制本窗口运行时开关，不写配置；配置在载入/聚焦时权威。迷你态不朗读：进入 `applyMiniDom` 即停，退出刷新配置。
+朗读按钮只控制本窗口的会话态：载入即关，点一下即开/关，只影响当前窗口（另一个 Chat 窗口各自独立），不写配置。迷你态不朗读：进入 `applyMiniDom` 即停，退出刷新配置。
 
 ### 平台
 

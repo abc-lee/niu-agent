@@ -1623,14 +1623,17 @@ ipcMain.handle('get-config', () => {
 });
 
 // Chat 页系统语音朗读配置（plan: docs/superpowers/plans/2026-10-20-chat-tts-system-voice.md）
-// 只读 user-config.json 的顶层 tts 段；缺省=关闭；任何异常都返回缺省（渲染端永不 await 失败）。
+// 只读 user-config.json 的顶层 tts 段（provider/voice/rate）；任何异常都返回缺省（渲染端永不 await 失败）。
+// 朗读开关是 Chat 窗口的会话态（按钮控制，载入即关），不入配置；旧配置残留的 enabled 键一律忽略。
 ipcMain.handle('get-tts-config', () => {
-  const defaults = { enabled: false, provider: 'system', voice: '', rate: 1.0 };
+  const defaults = { provider: 'system', voice: '', rate: 1.0 };
   try {
     if (fs.existsSync(userConfigPath)) {
       const cfg = JSON.parse(fs.readFileSync(userConfigPath, 'utf-8'));
       if (cfg && typeof cfg === 'object' && cfg.tts && typeof cfg.tts === 'object' && !Array.isArray(cfg.tts)) {
-        return { ...defaults, ...cfg.tts };
+        const tts = { ...cfg.tts };
+        delete tts.enabled;
+        return { ...defaults, ...tts };
       }
     }
   } catch (e) { console.error('Failed to read tts config:', e); }

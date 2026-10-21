@@ -1,12 +1,12 @@
 (function () {
   'use strict';
-  var DEFAULTS = { enabled: false, provider: 'system', voice: '', rate: 1.0 };
+  var DEFAULTS = { provider: 'system', voice: '', rate: 1.0 };
   var SEEN_CAP = 200, VOICES_TIMEOUT = 1500;
   var T = window.ChatTtsText;
   if (!T) { console.error('[TTS] chat-tts-text.js missing'); return; }
   var synth = window.speechSynthesis || null;
   var ttsBtn = null, config = Object.assign({}, DEFAULTS);
-  var configEnabled = false, sessionEnabled = false, userOverride = false;
+  var sessionEnabled = false;
   var unavailable = !synth || (typeof SpeechSynthesisUtterance === 'undefined');
   var noChineseVoice = false, speechBlocked = false;
   var seenIds = new Set(), voicesPromise = null, generation = 0;
@@ -25,15 +25,11 @@
   function applyConfig(raw) {
     var next = Object.assign({}, DEFAULTS);
     if (raw && typeof raw === 'object') {
-      if (typeof raw.enabled === 'boolean') next.enabled = raw.enabled;
       if (typeof raw.provider === 'string' && raw.provider) next.provider = raw.provider;
       if (typeof raw.voice === 'string') next.voice = raw.voice;
       next.rate = T.normalizeRate(raw.rate);
     }
-    config = next; configEnabled = !!config.enabled;
-    if (speechBlocked) sessionEnabled = false;
-    else if (!userOverride) sessionEnabled = configEnabled;
-    if (!configEnabled && !userOverride) stop();
+    config = next;
     syncButton(); probeVoice();
   }
   function refreshConfig() { return readConfig().then(applyConfig); }
@@ -137,7 +133,7 @@
     b.disabled = unavailable || noChineseVoice;
   }
   function setEnabled(on) {
-    userOverride = true; speechBlocked = false;
+    speechBlocked = false;
     if (unavailable || noChineseVoice) { sessionEnabled = false; syncButton(); return; }
     sessionEnabled = !!on; if (!sessionEnabled) stop(); syncButton();
   }
@@ -179,6 +175,6 @@
     isAvailable: function () { return !unavailable && !noChineseVoice; },
     setEnabled: setEnabled, toggle: toggle, stop: stop, refreshConfig: refreshConfig,
     getTitle: getTitle,
-    getState: function () { return { config: Object.assign({}, config), configEnabled: configEnabled, sessionEnabled: sessionEnabled, userOverride: userOverride, unavailable: unavailable, noChineseVoice: noChineseVoice, speechBlocked: speechBlocked }; }
+    getState: function () { return { config: Object.assign({}, config), sessionEnabled: sessionEnabled, unavailable: unavailable, noChineseVoice: noChineseVoice, speechBlocked: speechBlocked }; }
   };
 })();
