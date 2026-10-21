@@ -249,6 +249,9 @@ Skills 是存储在 `~/.niu/skills/` 目录下的 Markdown 文件（`memory/skil
 2. Agent 每轮对话时，通过 `_inject_dynamic_resources()` 按语义搜索匹配相关 Skill
 3. 匹配到的 Skill 内容动态注入到 Agent 上下文，指导 Agent 按规范执行任务
 
+> **注记：为什么默认不监测 `~/.agents/skills` 等系统技能目录（2026-10-21）**
+> Niu 的 Skills 是可自进化的：`dream-evolver` 会创建、修改、降级、淘汰，`SkillSync` 按内容哈希维护其图谱实体。`~/.niu/skills/` 是 Niu 自有、可写的进化目录；`~/.agents/skills/` 等系统目录由外部应用安装/升级/删除，内容不受 Niu 管理，也不具备“可进化、可淘汰、可重注入”的语义。默认纳入监测会把外部静态文件当成自有技能维护，造成状态/图谱冲突和误删，因此默认只监测 `~/.niu/skills/`。
+
 > **注记：出厂技能的更新规则（2026-10-16 起）**
 > - **缺失 ⇒ 拷**：`~/.niu/skills/` 里没有的出厂技能会被补上。
 > - **你/Agent 改过 ⇒ 绝不覆盖**：启动器用出厂清单（`memory/skills/seed-manifest.json` 记录每个文件**当前与全部历史出厂版**的哈希）判断——只要你的那份内容**不等于任何出厂版**（即你动过），就**原样保留**，日志一行 `[skills] 保留已改动的技能 <file>`。
