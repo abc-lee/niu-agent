@@ -8,19 +8,24 @@
 5. 运行时 lightrag session.chat 调用（验证 provider 前缀推导在运行时生效）
 
 所有场景 ≤120s 返回（不卡死）。
+
+运行方式：需要真实凭据的配置文件（缺失即 skip）。默认查找
+<临时目录>/niu-test/config/ 下的 user-config.json 与 user-config - glm.json；
+可用环境变量 NIU_PROBE_CONFIG_DIR 覆盖为包含这两个文件的目录。
 """
 import asyncio
 import json
 import signal
 import sys
 import tempfile
+import os
 from pathlib import Path
 
 import pytest
 
 PROBE_TIMEOUT_SECONDS = 120
 
-_TEST_CONFIG_DIR = Path(tempfile.gettempdir()) / "niu-test" / "config"
+_TEST_CONFIG_DIR = Path(os.environ.get("NIU_PROBE_CONFIG_DIR") or Path(tempfile.gettempdir()) / "niu-test" / "config")
 DOUBAO_CONFIG_PATH = _TEST_CONFIG_DIR / "user-config.json"
 GLM_CONFIG_PATH = _TEST_CONFIG_DIR / "user-config - glm.json"
 

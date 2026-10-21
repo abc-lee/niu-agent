@@ -459,7 +459,8 @@ class TestLlmModelFunc:
                         )
 
         system_msg = captured_messages[0]
-        assert "知识图谱所属用户" not in system_msg["content"]
+        # 注入体特征句；静态脑区提示词本身含“知识图谱所属用户”标题，不能用标题断言
+        assert "本知识图谱属于以下用户" not in system_msg["content"]
         assert "大脑区域架构" in system_msg["content"]
 
     async def test_user_info_injection_idempotent(self, mock_llm_config):
@@ -504,7 +505,7 @@ class TestLlmModelFunc:
 
         system_msg = captured_messages[0]
         # 幂等：用户信息只出现一次
-        assert system_msg["content"].count("知识图谱所属用户") == 1
+        assert system_msg["content"].count("本知识图谱属于以下用户") == 1
         # 用户信息幂等短路不影响脑区注入
         assert "大脑区域架构" in system_msg["content"]
         # 幂等 guard 在检测到已存在时根本不调用 build_user_info_prompt

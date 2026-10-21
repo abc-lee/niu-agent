@@ -13,10 +13,14 @@ TDD：先写覆盖所有可能性的失败测试，再改代码修复。
 真实 LLM 调用，需要网络。两个配置文件（默认落在临时测试目录，缺失即 skip）：
 - <临时目录>/niu-test/config/user-config.json（豆包 ark-code-latest）
 - <临时目录>/niu-test/config/user-config - glm.json（GLM xopglm5）
+
+运行方式：把上述两个真实凭据配置文件放进默认临时测试目录，或用环境变量
+NIU_PROBE_CONFIG_DIR 指定包含这两个文件的目录后执行 pytest。
 """
 import asyncio
 import json
 import tempfile
+import os
 import time
 from pathlib import Path
 
@@ -25,7 +29,7 @@ import pytest
 pytestmark = pytest.mark.integration
 
 # 测试用的两个真实配置
-_TEST_CONFIG_DIR = Path(tempfile.gettempdir()) / "niu-test" / "config"
+_TEST_CONFIG_DIR = Path(os.environ.get("NIU_PROBE_CONFIG_DIR") or Path(tempfile.gettempdir()) / "niu-test" / "config")
 DOUBAO_CONFIG_PATH = _TEST_CONFIG_DIR / "user-config.json"
 GLM_CONFIG_PATH = _TEST_CONFIG_DIR / "user-config - glm.json"
 
