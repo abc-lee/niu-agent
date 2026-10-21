@@ -20,6 +20,7 @@
 - **真机 AC（macOS，2026-10-21 08:40 左右）**：`/api/chat/session` 返回「TTS 验收测试。」（HTTP 200，message id `2a322a0d-56f8-4695-b445-0265c50b5383`），用户确认听到系统中文语音；当时临时 `tts.enabled=true` 用于验收，随后按用户要求删除该键。Windows 真机未测（无环境），按手册需系统中文语音包。
 - **约束**：未跑全量 pytest；实施 Agent 未 commit；夜间未重启，验收时用户已重启。
 - **后续简化（同日）**：删除 `tts.enabled`；`tts` 段只保留 `provider/voice/rate`，留给阶段二外挂 TTS。喇叭图标每次 Chat 载入默认关，点击开/关，仅当前窗口生效、不持久化；遗留 `enabled` 键忽略。
+- **最终收敛（同日）**：删除 `tts_event` 旁路（`notify_tts_event*`、`onTtsEvent`、`tts-event`、`_is_im_turn`）；TTS 只消费现有 `new_message` 中 `role=assistant` 的已落库消息，按 id 去重、FIFO 排队朗读；`role=tool` 不读。真机确认中间计划 + 最终总结依次读出。
 
 ---
 

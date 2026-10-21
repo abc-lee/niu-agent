@@ -11,6 +11,7 @@
   var noChineseVoice = false, speechBlocked = false;
   var seenIds = new Set(), voicesPromise = null, generation = 0;
   var lastText = '', lastTextAt = 0;
+  var queue = [], speaking = false;
   function getBtn() { if (!ttsBtn) ttsBtn = document.getElementById('tts-btn'); return ttsBtn; }
   function isMini() { return !!(document.body && document.body.classList.contains('mini')); }
   function readConfig() {
@@ -69,12 +70,12 @@
       syncButton(); return !!v;
     });
   }
-  function speakChunks(chunks, voice, myGen) {
+  function speakChunks(chunks, voice, myGen, onDone) {
     var rate = T.normalizeRate(config.rate);
     var lang = String((voice && (voice.lang || voice.language)) || 'zh-CN');
     function next(i) {
       if (myGen !== generation) return;
-      if (i >= chunks.length) return;
+      if (i >= chunks.length) { if (onDone) onDone(); return; }
       var u = new SpeechSynthesisUtterance(chunks[i]);
       var advanced = false, started = false, watchdog = null;
       function advance() { if (advanced) return; advanced = true; clearTimeout(watchdog); if (myGen === generation) next(i + 1); }
@@ -90,7 +91,9 @@
       u.onerror = function (e) {
         var err = e && e.error;
         if (err === 'not-allowed' || err === 'NotAllowedError') {
-          advanced = true; clearTimeout(watchdog); speechBlocked = true; sessionEnabled = false; syncButton(); return;
+          advanced = true; clearTimeout(watchdog); speechBlocked = true; sessionEnabled = false; syncButton();
+          if (onDone) onDone();
+          return;
         }
         console.warn('[TTS] utterance error:', err || 'unknown'); advance();
       };
@@ -98,7 +101,7 @@
     }
     next(0);
   }
-  function speak(text, id) {
+  function enqueue(text, id) {
     if (!sessionEnabled || unavailable || noChineseVoice || speechBlocked || isMini()) return;
     if (id && seenIds.has(id)) return;
     if (lastText && Date.now() - lastTextAt < 5000 &&
@@ -106,20 +109,49 @@
     if (id) { seenIds.add(id); if (seenIds.size > SEEN_CAP) seenIds.delete(seenIds.values().next().value); }
     var chunks = T.splitChunks(T.cleanText(text));
     if (!chunks.length) return;
-    generation++;
+    lastText = text;
+    lastTextAt = Date.now();
+    queue.push(chunks);
+    pump();
+  }
+  function endCurrent(myGen) {
+    if (myGen !== generation || !speaking) return;
+    speaking = false;
+    pump();
+  }
+  function pump() {
+    if (speaking || !queue.length) return;
+    if (!sessionEnabled || unavailable || noChineseVoice || speechBlocked || isMini()) { queue.length = 0; return; }
+    var chunks = queue.shift();
     var myGen = generation;
-    try { synth.cancel(); } catch (e) { /* no-op */ }
+    speaking = true;
     ensureVoices().then(function (voices) {
       if (myGen !== generation) return;
-      if (!voices.length) { console.warn('[TTS] no voices; skip'); return; }
+      if (!voices.length) {
+        console.warn('[TTS] no voices; skip');
+        speaking = false; pump();
+        return;
+      }
       var voice = T.pickVoice(voices, config.voice);
-      if (!voice) { noChineseVoice = true; sessionEnabled = false; syncButton(); return; }
-      lastText = text;
-      lastTextAt = Date.now();
-      setTimeout(function () { if (myGen === generation) speakChunks(chunks, voice, myGen); }, 50);
+      if (!voice) {
+        noChineseVoice = true; sessionEnabled = false; syncButton();
+        queue.length = 0; speaking = false;
+        return;
+      }
+      setTimeout(function () {
+        if (myGen !== generation) return;
+        speakChunks(chunks, voice, myGen, function () { endCurrent(myGen); });
+      }, 50);
+    }).catch(function (e) {
+      console.warn('[TTS] ensureVoices failed:', e);
+      if (myGen === generation) { speaking = false; pump(); }
     });
   }
-  function stop() { generation++; try { synth && synth.cancel(); } catch (e) { /* no-op */ } }
+  function stop() {
+    generation++;
+    queue.length = 0; speaking = false;
+    try { synth && synth.cancel(); } catch (e) { /* no-op */ }
+  }
   function getTitle() {
     if (unavailable) return '朗读：本机不支持语音合成';
     if (speechBlocked) return '朗读：被系统自动播放策略阻止';
@@ -141,20 +173,19 @@
 
   var configReady = false, pendingTts = null;
   function handleTts(data) {
-    if (!data || data.role !== 'assistant' || data.final !== true || !data.id || data.source !== 'electron') return;
-    var id = String(data.id);
-    if (seenIds.has(id)) return;
-    speak(data.content, id);
-  }
-  if (window.electronAPI && typeof window.electronAPI.onTtsEvent === 'function') {
-    window.electronAPI.onTtsEvent(function (data) {
-      if (!configReady) { pendingTts = data; return; }
-      handleTts(data);
-    });
+    // 单一通道：读 new_message 里的 assistant 文本（工具轮旁白 + 最终回复都读），
+    // 按消息 id 去重、按到达顺序排队；空内容不读。
+    if (!data || data.role !== 'assistant' || !data.id) return;
+    var text = data.content == null ? '' : String(data.content);
+    if (!text) return;
+    enqueue(text, String(data.id));
   }
   if (window.electronAPI && typeof window.electronAPI.onNewMessage === 'function') {
     window.electronAPI.onNewMessage(function (data) {
-      if (data && (data.role === 'user' || data.role === 'chat_busy')) stop();
+      if (!data) return;
+      if (data.role === 'user' || data.role === 'chat_busy') { stop(); return; }
+      if (!configReady) { pendingTts = data; return; }
+      handleTts(data);
     });
   }
   if (window.electronAPI && typeof window.electronAPI.onSyncState === 'function') {

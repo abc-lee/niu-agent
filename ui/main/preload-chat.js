@@ -116,8 +116,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 接收新消息通知（SSE 推送，前端从数据库读取）
   onNewMessage: (callback) => ipcRenderer.on('new-message', (_event, data) => callback(data)),
 
-  // 接收 TTS 朗读事件通知（SSE 顶级 tts_event，Chat 页系统语音；final=true 才朗读）
-  onTtsEvent: (callback) => ipcRenderer.on('tts-event', (_event, data) => callback(data)),
   // 读取系统语音朗读配置（顶层 tts 段的 provider/voice/rate；朗读开关是本窗口会话态，不入库；主进程永不抛错）
   getTtsConfig: () => ipcRenderer.invoke('get-tts-config'),
 

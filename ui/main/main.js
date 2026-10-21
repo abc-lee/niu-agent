@@ -2533,9 +2533,11 @@ function startMessageEventStream() {
           try {
             const event = JSON.parse(jsonStr);
             if (event.type === 'new_message') {
-              // 通知 chat 有新消息（传递 role/content/source 字段，用于 chat_busy/chat_idle 状态机控制 + ask_main_agent 跨进程转发）
+              // 通知 chat 有新消息（传递 id/role/content/source 字段：id 供 Chat 页语音朗读去重，
+              // role 驱动 chat_busy/chat_idle 状态机 + ask_main_agent 跨进程转发）
               if (chatWindow && !chatWindow.isDestroyed()) {
                 chatWindow.webContents.send('new-message', {
+                  id: event.id,
                   role: event.role,
                   content: event.content,
                   source: event.source
@@ -2550,18 +2552,6 @@ function startMessageEventStream() {
               // 用户发消息代表已看到报警内容，无论本地还是飞书都应取消
               if (event.role === 'user' && spiritWindow && !spiritWindow.isDestroyed()) {
                 spiritWindow.webContents.send('cancel-alert');
-              }
-            } else if (event.type === 'tts_event') {
-              // Chat 页系统语音朗读（spec v2.1 I-3）：独立事件通道，new_message 载荷/行为不变。
-              // final=true 即本轮最终回复（工具锚点行不朗读），由渲染端决定是否朗读。
-              if (chatWindow && !chatWindow.isDestroyed()) {
-                chatWindow.webContents.send('tts-event', {
-                  id: event.id,
-                  role: event.role,
-                  content: event.content,
-                  final: event.final === true,
-                  source: event.source
-                });
               }
             } else if (event.type === 'tool_status') {
               // 转发工具调用状态到聊天窗口

@@ -1131,7 +1131,7 @@ curl http://<host>:<port>/props      # 本地 llama.cpp：确认上下文窗口�
 
 ## 语音朗读（TTS，系统语音）
 
-**一句话**：Chat 页收到最终 assistant 回复时，用操作系统自带中文语音朗读；每次载入 Chat 都是**关**，点输入区朗读图标才开。TTS 走独立的 `tts_event` 分支，不修改 `new_message`、数据库或 IM。
+**一句话**：Chat 页每收到一条 assistant 文本（含工具轮旁白）就按到达顺序排队，用操作系统自带中文语音朗读；每次载入 Chat 都是**关**，点输入区朗读图标才开。TTS 只消费现有 `new_message` 中 `role=assistant` 的已落库消息，没有额外旁路事件；工具输出 `role=tool` 不读。
 
 ### 配置
 
@@ -1155,10 +1155,10 @@ Chat 载入或重新获得焦点时重新读取配置（`provider`/`voice`/`rate
 
 ### 朗读范围
 
-- 只读 `_persist_one_msg` 发出的 `tts_event` 中 `role=assistant && final=true && source=electron` 的消息；同 id 只读一次。
-- `final=!tool_calls`：工具轮旁白 `final=false`，不读。
-- 不读历史、流式 token、用户消息、ask_user、子 Agent、`ElectronChannel.push` 程序推送、IM 入站；scheduler/定时任务的最终 assistant 会读。
-- `chat.py` 的停止/异常窗口 `full_reply` 兜底**不发** `tts_event`，该轮不朗读（已知边界）。
+- 读 `new_message` 里**每一条** `role=assistant` 的已落库消息（含工具轮旁白与最终回复）；按 id 去重、FIFO 排队，一条念完再念下一条。`role=tool` 的工具输出不读。
+- 每条文本（含中间旁白）只读一次：按消息 id 去重，重复投递/重放不会再念；上一条起 5s 内若新文本与它互为前缀（重复回灌）也按重复跳过。
+- 不读工具状态卡片、工具 JSON/`tool` 角色行、子 Agent、历史、流式 token、用户消息、ask_user；程序推送/IM 若以 assistant `new_message` 显示，也会按同一路径读。scheduler/定时任务的 assistant 文本会读。
+- 停止/异常窗口的 `full_reply` 兜底若作为 assistant 消息落库并推送，也会按同一路径朗读。
 - 清洗代码块、URL、HTML、表格；分句；整条 4000 字上限；纯符号句不读。
 
 ### 按钮
