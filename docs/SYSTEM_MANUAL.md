@@ -1193,7 +1193,21 @@ bash download_model.sh --model small \
 ~/.niu/bin/qwen_tts -d ~/.niu/models/qwen3-tts/0.6b-customvoice --list-speakers
 ```
 
-配置示例（当前可选用 `serena` + `int4`）：
+#### 二进制不可跨机：每台机器自己编译或获取对应平台产物
+
+C 引擎按 OS + CPU 架构编译，**不能把本机的 `~/.niu/bin/qwen_tts` 直接拷给另一台电脑**（macOS x86_64、macOS arm64、Windows x64、Linux 都不同，且 `-march=native` 会绑定本机指令集）。
+
+| 平台 | 前置 | 产物/做法 |
+|---|---|---|
+| macOS Intel / Apple Silicon | Xcode Command Line Tools | `make blas` → 对应架构的 `qwen_tts`；Apple Silicon 与 Intel 不能互用 |
+| Windows x64 | MSVC（或 WSL2 + Linux 工具链） | 按上游 `docs/building.md` 构建 `qwen_tts.exe`；不建议把 WSL 的 Linux 二进制直接给 Windows 用 |
+| Linux x64/arm64 | gcc/clang + OpenBLAS | `make blas` → 对应架构二进制 |
+
+- 当前 Niu **不随包分发**这些二进制或模型；没有编译/下载的用户继续用系统语音，主程序不受影响。
+- 想免编译，只能由发布方提供**对应平台**的预编译产物；不能共用一份。
+- 模型下载脚本是 bash；Windows 用 Git Bash/WSL 执行，模型落到 `%USERPROFILE%\.niu\models\qwen3-tts\...`。
+
+配置示例（0.6B 用 `int8`；`int4` 只对 1.7B Talker 有意义）：
 
 ```json
 "tts": {
@@ -1202,7 +1216,7 @@ bash download_model.sh --model small \
   "rate": 0.9,
   "qwen": {
     "model": "0.6b-customvoice",
-    "quantization": "int4",
+    "quantization": "int8",
     "model_dir": "",
     "binary": "",
     "port": 17987,
@@ -1213,7 +1227,7 @@ bash download_model.sh --model small \
 }
 ```
 
-- `quantization`：`bf16` / `int8` / `int4`，是 sidecar 启动参数；改后调 `POST /api/tts/reload`，不重启 Niu。
+- `quantization`：`bf16` / `int8` / `int4`，是 sidecar 启动参数；改后调 `POST /api/tts/reload`，不重启 Niu。**0.6B 用 `int8`；`int4` 只量化 1.7B 的 Talker，0.6B 上不是有效加速项。**
 - `voice`：**不要写死**；用 `--list-speakers` / `GET /v1/speakers` 或 `GET /api/tts/options?probe=true` 动态取，由用户试听后定。
 - 任何 Qwen 超时/错误：同一条消息回落系统语音，不静默。
 - C 引擎 `--serve` 只收端口，且当前监听 `0.0.0.0`；不要把端口暴露到不可信网络，必要时用系统防火墙限制。
