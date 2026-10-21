@@ -1160,6 +1160,7 @@ Chat 载入或重新获得焦点时重新读取配置（`provider`/`voice`/`rate
 - 不读工具状态卡片、工具 JSON/`tool` 角色行、子 Agent、历史、流式 token、用户消息、ask_user；程序推送/IM 若以 assistant `new_message` 显示，也会按同一路径读。scheduler/定时任务的 assistant 文本会读。
 - 停止/异常窗口的 `full_reply` 兜底若作为 assistant 消息落库并推送，也会按同一路径朗读。
 - 清洗代码块、URL、HTML、表格；分句；整条 4000 字上限；纯符号句不读。
+- 消息级手动朗读：hover 消息时间戳前的喇叭，点击手动朗读该条，不区分角色，不依赖自动朗读开关（仅本机完全无语音合成时不可用）。
 
 ### 按钮
 

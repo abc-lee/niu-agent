@@ -177,18 +177,23 @@
     }
     next(0);
   }
-  function enqueue(text, id) {
-    if (!sessionEnabled || unavailable || noChineseVoice || speechBlocked || isMini()) return;
-    if (id && seenIds.has(id)) return;
-    if (lastText && Date.now() - lastTextAt < 5000 &&
-        (text === lastText || text.indexOf(lastText) === 0 || lastText.indexOf(text) === 0)) return;
+  // force=true（手动朗读）跳过 sessionEnabled/noChineseVoice/speechBlocked/isMini、id 去重与 5s 前缀去重，
+  // 但 unavailable 永远拦截；只有非 force 更新 lastText/lastTextAt，避免污染自动朗读去重窗口。
+  function enqueue(text, id, force) {
+    if (unavailable) return false;
+    if (!force) {
+      if (!sessionEnabled || noChineseVoice || speechBlocked || isMini()) return false;
+      if (id && seenIds.has(id)) return false;
+      if (lastText && Date.now() - lastTextAt < 5000 &&
+          (text === lastText || text.indexOf(lastText) === 0 || lastText.indexOf(text) === 0)) return false;
+    }
     if (id) { seenIds.add(id); if (seenIds.size > SEEN_CAP) seenIds.delete(seenIds.values().next().value); }
     var chunks = T.splitChunks(T.cleanText(text));
-    if (!chunks.length) return;
-    lastText = text;
-    lastTextAt = Date.now();
-    queue.push(chunks);
+    if (!chunks.length) return false;
+    if (!force) { lastText = text; lastTextAt = Date.now(); }
+    queue.push({ chunks: chunks, force: !!force });
     pump();
+    return true;
   }
   function endCurrent(myGen) {
     if (myGen !== generation || !speaking) return;
@@ -197,8 +202,13 @@
   }
   function pump() {
     if (speaking || !queue.length) return;
-    if (!sessionEnabled || unavailable || noChineseVoice || speechBlocked || isMini()) { queue.length = 0; return; }
-    var chunks = queue.shift();
+    var item = queue[0];
+    if (unavailable) { queue.length = 0; speaking = false; return; }
+    if (!item.force && (!sessionEnabled || noChineseVoice || speechBlocked || isMini())) {
+      queue.length = 0; return;
+    }
+    queue.shift();
+    var chunks = item.chunks, force = item.force;
     var myGen = generation;
     speaking = true;
     if (qwenMode()) {
@@ -257,6 +267,15 @@
     sessionEnabled = !!on; if (!sessionEnabled) stop(); syncButton();
   }
   function toggle() { setEnabled(!sessionEnabled); }
+  // 手动朗读：清空自动队列、打断当前音频，force 入队；同一句连点两次也重读。
+  function speakText(text) {
+    var raw = String(text == null ? '' : text).trim();
+    if (!raw || unavailable) return false;
+    stop();                    // 清队列、打断当前音频，generation++
+    lastText = ''; lastTextAt = 0;
+    return enqueue(raw, null, true);
+  }
+
 
   var configReady = false, pendingTts = null;
   function handleTts(data) {
@@ -292,7 +311,7 @@
     isEnabled: function () { return sessionEnabled; },
     isAvailable: function () { return !unavailable && !noChineseVoice; },
     setEnabled: setEnabled, toggle: toggle, stop: stop, refreshConfig: refreshConfig,
-    getTitle: getTitle,
+    getTitle: getTitle, speakText: speakText,
     getState: function () { return { config: Object.assign({}, config), sessionEnabled: sessionEnabled, unavailable: unavailable, noChineseVoice: noChineseVoice, speechBlocked: speechBlocked }; }
   };
 })();

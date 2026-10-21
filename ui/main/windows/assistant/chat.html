@@ -166,7 +166,19 @@
     }
     .message:hover .timestamp-bubble {
       opacity: 1;
+      pointer-events: auto;
     }
+    /* 消息级朗读按钮：基态继承 bubble 的 pointer-events:none，hover 后一起可点；
+       不要给按钮本身 pointer-events:auto，否则隐藏气泡仍会截获点击 */
+    .timestamp-bubble .message-tts-btn {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 14px; height: 14px; margin-right: 4px; padding: 0;
+      border: 0; background: transparent; color: inherit; cursor: pointer;
+      vertical-align: -2px;
+    }
+    .timestamp-bubble .message-tts-btn:hover { color: #9fe3ef; }
+    .timestamp-bubble .message-tts-btn svg { width: 12px; height: 12px; display: block; }
+    .timestamp-bubble .timestamp-text { display: inline; }
     .message.user {
       background: #78b2be;
       color: white;
@@ -2499,6 +2511,25 @@
     }
 
     // ========== 消息显示 ==========
+    // 时间戳气泡：仅有 createdAt 的消息显示（DB 版本消息）；喇叭按钮在时间文本前，共用显隐时机
+    function appendTimestampBubble(div, createdAt) {
+      if (!createdAt) return;
+      div.dataset.timestamp = createdAt;
+      const bubble = document.createElement('span');
+      bubble.className = 'timestamp-bubble';
+      if (window.ChatMessageTts) {
+        bubble.appendChild(window.ChatMessageTts.createButton(document, function () {
+          const text = window.ChatMessageTts.extractText(div);
+          if (text && window.NiuTts) window.NiuTts.speakText(text);
+        }));
+      }
+      const timeEl = document.createElement('span');
+      timeEl.className = 'timestamp-text';
+      timeEl.textContent = formatRelativeTime(createdAt) || '';
+      bubble.appendChild(timeEl);
+      div.appendChild(bubble);
+    }
+
     function addMessage(role, text, images = [], skipAppend = false, createdAt = null) {
       // 双管道分离：tool 消息只走 DB 管道，不渲染到对话框
       if (role === 'tool') return null;
@@ -2513,14 +2544,7 @@
       }
       const div = document.createElement('div');
       div.className = `message ${role}`;
-      // 时间戳气泡：仅有 createdAt 的消息显示（DB 版本消息）
-      if (createdAt) {
-        div.dataset.timestamp = createdAt;
-        const bubble = document.createElement('span');
-        bubble.className = 'timestamp-bubble';
-        bubble.textContent = formatRelativeTime(createdAt) || '';
-        div.appendChild(bubble);
-      }
+      appendTimestampBubble(div, createdAt);
       
       // 所有消息统一走 Markdown 渲染（包括含图片的消息）
       // Markdown 图片 ![描述](路径) 由 marked.js 渲染，然后后处理添加交互
@@ -2670,14 +2694,7 @@
         <div class="subagent-direction">${escapeHtml(direction)}</div>
         <div class="subagent-content">${escapeHtml(content)}</div>
       `;
-      // 时间戳气泡：subagent_msg 也是 DB 消息，需要显示时间戳
-      if (createdAt) {
-        div.dataset.timestamp = createdAt;
-        const bubble = document.createElement('span');
-        bubble.className = 'timestamp-bubble';
-        bubble.textContent = formatRelativeTime(createdAt) || '';
-        div.appendChild(bubble);
-      }
+      appendTimestampBubble(div, createdAt);
       if (!skipAppend) {
         messages.appendChild(div);
         messages.scrollTop = messages.scrollHeight;
@@ -3664,7 +3681,10 @@
         const ts = msgDiv.dataset.timestamp;
         if (ts) {
           const text = formatRelativeTime(ts);
-          if (text) bubble.textContent = text;
+          if (text) {
+            const s = bubble.querySelector('.timestamp-text');
+            if (s) s.textContent = text;
+          }
         }
       });
     }, 30000);
@@ -4185,6 +4205,8 @@
   </script>
   <!-- 系统语音朗读（plan: docs/superpowers/plans/2026-10-20-chat-tts-system-voice.md）：纯文本助手必须先于朗读器 -->
   <script src="chat-tts-text.js"></script>
+  <!-- 消息级朗读按钮（spec: docs/superpowers/specs/2026-10-21-chat-message-tts-button.md）：须在朗读器之前 -->
+  <script src="chat-message-tts.js"></script>
   <script src="chat-tts.js"></script>
   <!-- 磨砂模糊观测层（2026-09-16，plan: docs/superpowers/plans/2026-09-16-winfx-integration.md §4）：只读观测 + IPC 上报 -->
   <script src="mini-blur-observer.js"></script>
