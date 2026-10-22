@@ -474,6 +474,30 @@ def _find_entity_by_name(states, domain, name):
     return None
 
 
+def _lookup_registered_entity(entity_registry, domain, config_key):
+    """在 entity_registry 快照里按 unique_id 查真实 entity_id（纯查表，零 IO）。
+
+    registry 的 unique_id == 本地记录的 config_key（2026-10-22 双版本容器实测），
+    entity_id 则是 HA 按 alias/name slugify 生成的真实值，不能用 config_key 拼接。
+
+    Args:
+        entity_registry: config/entity_registry/list 的 result 列表（None/空 ⇒ 无匹配）
+        domain: 域前缀，如 "scene" / "script"
+        config_key: 本地记录的配置 id
+
+    Returns:
+        entity_id str — 命中
+        None — 无匹配（不等于「实体不存在」，也可能只是未加载/已改名）
+    """
+    prefix = f"{domain}."
+    for entry in entity_registry or []:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("unique_id") == config_key and (entry.get("entity_id") or "").startswith(prefix):
+            return entry.get("entity_id")
+    return None
+
+
 def _fetch_entity_registry(ha_url, headers):
     """通过 WebSocket 一次性获取 entity_registry"""
     token = headers.get("Authorization", "").replace("Bearer ", "")
@@ -482,6 +506,74 @@ def _fetch_entity_registry(ha_url, headers):
     if not results or not results[0]:
         return []
     return results[0]
+
+
+def _fetch_entity_registry_strict(ha_url, headers, timeout=2.0):
+    """严格获取 entity_registry：自建 WebSocket 单命令，整段自带 deadline。
+
+    与 _fetch_entity_registry（走 _ws_batch_call：connect/auth 超时写死 10s、线程池
+    join 不可中断，且把「命令失败」和「空表」都压成 []）不同，本函数区分取数失败与
+    空表，且调用方返回上界 ≈ timeout（close_timeout=0 ⇒ 取消后的关闭握手不再叠加时间），
+    调用方据此才能判定「无法核实」。
+
+    Returns:
+        list — 取数成功（[] = 注册表确实为空）
+        None — 取数失败（连接失败 / 认证失败 / 超时 / 连接关闭 / success 非真）
+    """
+    import websockets
+
+    token = headers.get("Authorization", "").replace("Bearer ", "")
+
+    async def _run():
+        ws_url = ha_url.replace("http://", "ws://").replace("https://", "wss://") + "/api/websocket"
+        async with websockets.connect(ws_url, open_timeout=timeout, close_timeout=0, max_size=5_000_000) as ws:
+            msg = json.loads(await ws.recv())
+            if msg.get("type") != "auth_required":
+                return None
+            await ws.send(json.dumps({"type": "auth", "access_token": token}))
+            msg = json.loads(await ws.recv())
+            if msg.get("type") != "auth_ok":
+                return None
+            await ws.send(json.dumps({"id": 1, "type": "config/entity_registry/list"}))
+            while True:
+                # 跳过无 id 的推送帧（themes_updated / panels_updated / event 等）
+                resp = json.loads(await ws.recv())
+                if resp.get("id") == 1:
+                    break
+            if not resp.get("success"):
+                return None
+            result = resp.get("result")
+            return result if isinstance(result, list) else None
+
+    def _outcome(value):
+        # 只有列表算成功；None（失败标记）与异常结果一律降级为 None
+        return value if isinstance(value, list) else None
+
+    try:
+        _asyncio.get_running_loop()
+    except RuntimeError:
+        # 无运行中的事件循环：直接跑，整段 wait_for 兜住 deadline
+        try:
+            return _outcome(_asyncio.run(_asyncio.wait_for(_run(), timeout)))
+        except Exception:
+            return None
+    else:
+        # 已在事件循环里：daemon 线程执行，join 超时即判失败（不等线程收尾，
+        # 线程内的 wait_for 会把它取消）
+        box = {}
+
+        def _worker():
+            try:
+                box["result"] = _asyncio.run(_asyncio.wait_for(_run(), timeout))
+            except Exception as e:
+                box["error"] = str(e)
+
+        thread = threading.Thread(target=_worker, daemon=True)
+        thread.start()
+        thread.join(timeout + 0.5)
+        if thread.is_alive() or "error" in box:
+            return None
+        return _outcome(box.get("result"))
 
 
 def _resolve_config_key(ha_url, headers, domain, entity_id, entity_registry=None):
@@ -557,10 +649,44 @@ def _verify_entity_exists(ha_url, headers, domain, config_key, timeout=3):
         return _VERIFY_UNAVAILABLE
     # 阶段 2: 用一次 WebSocket 查询 entity_registry，通过 unique_id 确认
     entity_registry = _fetch_entity_registry(ha_url, headers)
-    for entry in entity_registry:
-        if entry.get("unique_id") == config_key and entry.get("entity_id", "").startswith(f"{domain}."):
-            return entry["entity_id"]
-    return None
+    return _lookup_registered_entity(entity_registry, domain, config_key)
+
+
+def _resolve_scene_entity_id(ha_url, headers, config_key, timeout=3.0):
+    """短轮询 entity_registry，解析场景的真实 entity_id（仅供 create / snapshot 调用）。
+
+    列表补录路径不得调用本函数：它们必须复用调用方已取到的快照做纯查表
+    （_lookup_registered_entity），零轮询、零额外 IO。
+    不做 states 门控——避免复刻 _verify_entity_exists 里 pre_existing 采样导致的空等缺陷。
+
+    先立即取一轮；取数失败或取数成功但无匹配都计入轮次并 sleep(0.5) 后重试，
+    轮与轮之间判定 deadline 与轮次上限（6 轮），先到者为准。每轮 strict 取数固定
+    timeout=2.0，因此最坏总时长 ≈ timeout + 2s（daemon 线程路径单轮上限 +0.5s）。
+    此上界以「strict 单轮取数 ≤ 其自身 timeout」为前提：close_timeout 已把取消后的关闭
+    握手压到 ≤ timeout，缺此前提时轮间 deadline 只能在轮结束后才生效。
+
+    Returns:
+        entity_id str — 解析成功
+        None — 至少一轮取数成功，但始终没有 unique_id == config_key 的 scene 实体
+        _VERIFY_UNAVAILABLE — 所有轮次取数都失败（无法核实），调用方不得当作「不存在」
+    """
+    deadline = time.time() + timeout
+    rounds = 0
+    max_rounds = 6
+    saw_registry = False
+    while True:
+        rounds += 1
+        entity_registry = _fetch_entity_registry_strict(ha_url, headers, timeout=2.0)
+        if entity_registry is not None:
+            saw_registry = True
+            entity_id = _lookup_registered_entity(entity_registry, "scene", config_key)
+            if entity_id:
+                return entity_id
+        if rounds >= max_rounds or time.time() >= deadline:
+            break
+        time.sleep(0.5)
+    # 一轮 registry 都没取到 ⇒ 无法核实（哨兵）；取到过但始终无匹配 ⇒ 未解析（None）
+    return _VERIFY_UNAVAILABLE if not saw_registry else None
 
 
 def _validate_entity_state(ha_url, headers, entity_id, timeout=5):
@@ -1793,7 +1919,8 @@ def ha_scene(action: str, name: str = "", config: dict = None, confirm: bool = F
     if action == "activate":
         if not name:
             return {"error": "name 参数必填"}
-        # 查找场景配置 — config API 创建的场景不在 states 中，必须从 config API 读取 entities
+        # 查找场景配置 — config API 创建的场景在 reload 后会出现在 states（实体 id 由 alias/name slugify 生成）
+        # 未加载 / 已改名 / 尚未 reload 时 states 查不到，仍需从 config API 读取 entities
         config_key = None
         # 1) 先尝试在 states 中查找（YAML/UI 创建的场景可能在 states 中）
         states = _fetch_domain_states(ha_url, headers, "scene")
@@ -1821,7 +1948,7 @@ def ha_scene(action: str, name: str = "", config: dict = None, confirm: bool = F
                     return {"error": f"HA API 返回 {resp.status_code}: {resp.text[:200]}"}
                 except Exception as e:
                     return {"error": str(e)}
-        # 2) config API 创建的场景不在 states 中，用 name_map 查找 config_key，然后读取 entities 用 scene.apply 激活
+        # 2) states 未命中（场景未加载或已在 HA 内改名）：用 name_map 取 config_key，读取 entities 后用 scene.apply 激活
         if not config_key:
             config_key = _lookup_slug("scene", name)
         if not config_key:
@@ -1919,8 +2046,8 @@ def _find_script_by_name(ha_url, headers, name):
     返回 (entity_id, slug, available) 或 (None, None, available)。
     available=False 表示 HA 不可达（states 查询失败且 config API 从未得到响应）——
     调用方不得报「未找到脚本」，须如实报不可用。
-    HA 2026+ 通过 config API 创建的脚本不在 states 中出现，
-    但仍可通过 config API 按 slug 读取。"""
+    通过 config API 创建的脚本在 reload 后会出现在 states 中（实体 id 由 alias/name slugify 生成）；
+    states 未命中（未加载 / 已改名 / 尚未 reload）时仍可通过 config API 按 slug 读取。"""
 
     # 方式 1: 在 states 中查找（YAML/UI 创建的脚本可能在 states 中）
     states = _fetch_domain_states(ha_url, headers, "script")
