@@ -172,6 +172,13 @@ def _lookup_slug(domain: str, name: str) -> str:
     return config.get(key, {}).get(name, "")
 
 
+def _is_config_missing(resp) -> bool:
+    """HA 对缺失的 config key：旧版 404；2026.10 起 DELETE 返回 400 + {"message":"Resource not found"}。"""
+    if resp.status_code == 404:
+        return True
+    return resp.status_code == 400 and "Resource not found" in (resp.text or "")
+
+
 def _make_slug(name: str) -> str:
     """从名称生成合法的 HA entity_id slug。中文名称生成 UUID slug。"""
     try:
@@ -1818,7 +1825,7 @@ def ha_scene(action: str, name: str = "", config: dict = None, confirm: bool = F
                         entry["config"] = resp.json()
                         if "entities" in entry["config"]:
                             entry["config"]["entities"] = _denormalize_scene_entities(entry["config"]["entities"])
-                    elif resp.status_code == 404 and _lookup_slug("scene", map_name) == map_slug:
+                    elif _is_config_missing(resp) and _lookup_slug("scene", map_name) == map_slug:
                         # 配置在 HA 侧已不存在：现读配置确认映射仍指向该 config_key 才清理（不改该行输出）
                         # 仅作用于补录行：states 命中行在实体消失后由下一轮补录分支自愈
                         _unregister_name("scene", map_name)
@@ -1884,7 +1891,7 @@ def ha_scene(action: str, name: str = "", config: dict = None, confirm: bool = F
                                       else "注册表不可用，无法解析实体 id" if registry_failed
                                       else "注册表中无该 config_key 对应的实体（可能未加载或已改名）")
                 return result
-            if resp.status_code == 404 and _lookup_slug("scene", name) == config_key:
+            if _is_config_missing(resp) and _lookup_slug("scene", name) == config_key:
                 # 映射仍指向该 config_key ⇒ 配置确已不在 HA：清理本地映射（此分支不带 success 键）
                 _unregister_name("scene", name)
                 return {"name": name, "entity_id": entity_id, "note": "配置已不存在，已清理本地映射"}
@@ -2064,7 +2071,7 @@ def ha_scene(action: str, name: str = "", config: dict = None, confirm: bool = F
                     pass
                 _unregister_name("scene", name)
                 return {"success": True, "deleted": name}
-            if resp.status_code == 404:
+            if _is_config_missing(resp):
                 if _lookup_slug("scene", name) == config_key:
                     # 映射仍指向该 config_key ⇒ 配置确已不在 HA：清理本地映射
                     _unregister_name("scene", name)

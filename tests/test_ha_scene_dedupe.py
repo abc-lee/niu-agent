@@ -726,6 +726,27 @@ class Test404CleanupGuard:
         assert env.unregistered == [("scene", "Ghost Scene")]
 
 
+    def test_delete_missing_config_400_resource_not_found_cleans_mapping(self, env):
+        """HA 2026.10 起缺失 config key 的 DELETE 返回 400 + Resource not found ⇒ 同样清理映射。"""
+        self._states_hit_env(env, self.MAPPED_KEY_MATCH)
+        env.requests.add("DELETE", "api/config/scene/config",
+                         _Resp(400, {"message": "Resource not found"}, '{"message":"Resource not found"}'))
+        out = ha.ha_scene("delete", name=self.NAME, confirm=True)
+        assert out["success"] is True
+        assert out["deleted"] == self.NAME
+        assert out["note"] == "配置已不存在，已清理本地映射"
+        assert env.unregistered == [("scene", self.NAME)]
+
+    def test_delete_other_400_keeps_error(self, env):
+        """其他 400（非 Resource not found）⇒ 不清理映射，保持原 error 形态。"""
+        self._states_hit_env(env, self.MAPPED_KEY_MATCH)
+        env.requests.add("DELETE", "api/config/scene/config",
+                         _Resp(400, {"message": "Bad request"}, '{"message":"Bad request"}'))
+        out = ha.ha_scene("delete", name=self.NAME, confirm=True)
+        assert env.unregistered == []
+        assert out == {"error": 'HA API 返回 400: {"message":"Bad request"}'}
+
+
 # ---------------------------------------------------------------- 行 12
 
 class _FakeWS:
