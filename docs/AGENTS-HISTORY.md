@@ -8,6 +8,19 @@
 
 ---
 
+### 2026-10-22
+
+#### ha-server MCP：场景/脚本补录重复与幽灵 entity_id 修复（main `7e3b88a4` 起，SDD 三 Task）
+
+- **病灶（实测双版本复现）**：`ha_status`/`ha_scene list` 对 MCP 创建的场景出现同名两条，其中一条 `entity_id=scene.<uuid>` 在 HA 中不存在；`ha_status` 中脚本必重复（`seen_script_ids` 未播种）；`ha_scene create`/`snapshot` 返回假 id。根因：场景 config_key 是 uuid 而实体 id 是 alias slug；三处补录误以为 config-API 场景/脚本不在 states 中；脚本补录去重集合未由 states 播种。
+- **修法**：新增 `_lookup_registered_entity`（registry `unique_id==config_key` 查表）、`_fetch_entity_registry_strict`（自建 WS，`open_timeout=timeout`、`close_timeout=0`、`max_size=5MB`、按 `id` 匹配帧、校验 `success`、整段 `wait_for`、有运行循环走 daemon+join）、`_resolve_scene_entity_id`（≤6 轮/3s 轮间 deadline，全失败返回哨兵）。四处补录改「同域 entity_id 主判据 + 归一化 name 次判据」，场景补录零轮询用快照、脚本补录直构 `script.<config_key>` 不取 registry；`ha_status` 保留 registry 原始值以区分「取数失败/无匹配」两套 note 与 `state="unavailable"`；`ha_status` 补录遵守 domain/entity_id/area 过滤；get/update/delete 的 name_map 回退改单次 strict、states 不可达不取 registry、404 清理守卫改 `_lookup_slug` 现读（delete 2xx 不变）；create/snapshot 的 `success` 与 `entity_id` 解耦（解析不到 ⇒ null + warning）。`_fetch_entity_registry` 一字未改，automation 路径零变化。
+- **验证**：新增 `tests/test_ha_scene_dedupe.py`（64 passed，15 行矩阵全 mock，读写路径双隔离）；`tests/test_ha_fetch_domain_states.py` 11 passed；`ruff` 两新文件 0 告警、`__init__.py` 保持基线 8 条；一次性容器实跑 `scripts/ha_mcp_smoke.py`：**HA 2026.10.2 / 2026.6.4 / 中文名 三组均 26/26 PASS、0 SKIP**（原 bug 场景断言 `scene_no_duplicate`/`script_no_duplicate`/`scene_create_entity_exists` 全通过）。
+- **流程**：spec v1.0→v1.11、plan v1.0→v1.9，spec 2 轮 + plan 8 轮双审（连续两轮 APPROVE 后实施）；SDD Task A/B/C 各「新鲜子 Agent + spec/quality 两阶段审查 + 微修」。
+- **文档**：`docs/manual-ha-setup.md` 补返回形状（null/unavailable/note 三来源）与「存量自动化引用不存在的 `scene.<uuid>` 如何核查」；`config/disk/ha-server.yaml` 与 `TOOL_SCHEMAS` 两处描述同步一句。
+- **约束**：未跑全量 pytest；未连真实用户 HA；`~/.niu` 未被测试读写；`niu.app` 打包副本由 `bash launcher/build.sh` 再生，未手改。
+
+---
+
 ### 2026-10-21
 
 #### Chat 页系统语音朗读（阶段一，独立 `tts_event`，VERSION 0.5.6）
