@@ -68,6 +68,7 @@ MCP 服务器集群 (mcp-servers/)
 - Niu 项目任务派发：**单 Agent = `tasks[].agent` 显式 `"local-vision"`**（自包含任务、128K 内）；**双 Agent（双审）= A 角 local-vision + B 角远端 reviewer**；禁双远端、禁双本地并行（local-vision 单槽位排队）
 - **`write` 唤醒一个已结束的 Agent = 又派了一个本地 Agent（2026-10-13 实测教训，用户从机器负载上抓出）**：给已完成的 Agent 补要求，**必须按"新派一个"对待**——本地**任何时刻只允许一个在跑**。实证：PM 用 `write` 去"催"一个已跑完的 local-vision（本意只是补要求），把它**重新唤醒**，与随后新派的第二个本地 Agent **同时在调那台局域网模型**，用户看到"不止一个在抢资源"并手动停掉 ✗。⇒ **催办不许用唤醒**：要改就直接落到文件/新任务里；要确认它改了没，**读 `git diff` / `history://<id>` transcript，不唤醒** ✗。
 - **单 Agent 工作禁止远端模型（用户 2026-09-11 当面定）**：远端无法从外部判断「在干活 vs 卡死」（实证：远端 reviewer 跑 50 分钟 41 次工具调用无输出，PM 误判卡死 hard-abort，成果全丢）；本地 local-vision 跑在局域网机器上，风扇/负载可感知。**远端仅用于双审 B 角（与 local-vision 并行，有对照）**。
+- **effort 档位（用户 2026-10-22 定）**：远端 Minimax 系模型推理极冗长，派它做审查/分析**必须 `effort: "lo"`**（否则一小时也回不来）；其余模型（local-vision / 其他远端）做审查、逻辑推理类工作**一律 `effort: "hi"`**。
 - **验证归 PM、双审归 Agent**：diff / 跑验证脚本 / grep 核对属 PM 自己的活，不派 Agent（派 Agent 的价值=独立视角找缺陷，不是复述指令）。
 - **取消 Agent 前必读 transcript 收割成果**：硬取消无法唤醒，但 jsonl transcript 保留（`~/.omp/agent/sessions/<proj>/<sess>/<name>.jsonl`）——提取 digest 喂给新 local-vision 续做，实测 2m44s 补完前任 50 分钟未成文的活。
 - 系统模板默认 scout 是远端——Niu 项目不得套模板默认；每份派发逐个 tasks[i].agent 显式写。**靠门禁不靠记忆**
