@@ -1001,14 +1001,16 @@ def ha_status(area: str = "", domain: str = "", entity_id: str = "") -> dict:
         states = states_resp.json()
 
         token = config.get("ha_token", "")
-        devices, areas, entities = _ws_batch_call(url, token, [
+        devices, areas, entities_raw = _ws_batch_call(url, token, [
             {"type": "config/device_registry/list"},
             {"type": "config/area_registry/list"},
             {"type": "config/entity_registry/list"},
         ])
         devices = devices or []
         areas = areas or []
-        entities = entities or []
+        # entities_raw 保留 registry 命令的原始返回值：_ws_batch_call 把失败的命令压成
+        # None，补录据此才能区分「取数失败」与「空表」，必须在归一化之前留存
+        entities = entities_raw or []
     except Exception as e:
         return {"connected": False, "error": f"查询失败: {e}"}
 
@@ -1033,6 +1035,22 @@ def ha_status(area: str = "", domain: str = "", entity_id: str = "") -> dict:
     result_scenes = []
     result_automations = []
     result_areas = [{"id": a["area_id"], "name": a["name"]} for a in areas]
+
+    # 补录判重集合按域各建一套，数据源是「未过滤」的 states：entity_id 为主判据，
+    # 归一化 name（casefold+strip）为次判据。后面的 domain/entity_id/area 过滤只决定
+    # 补录是否追加，既不改变判重基准，也不删除/替换/重排 states 里已有的条目。
+    scene_state_ids, scene_state_names = set(), set()
+    script_state_ids, script_state_names = set(), set()
+    for entity in states:
+        eid = entity.get("entity_id", "")
+        ent_domain = eid.split(".", 1)[0]
+        if ent_domain not in ("scene", "script"):
+            continue
+        friendly = (entity.get("attributes") or {}).get("friendly_name") or eid
+        ids_set, names_set = ((scene_state_ids, scene_state_names) if ent_domain == "scene"
+                              else (script_state_ids, script_state_names))
+        ids_set.add(eid)
+        names_set.add(str(friendly).casefold().strip())
 
     for entity in states:
         eid = entity.get("entity_id", "")
@@ -1112,22 +1130,45 @@ def ha_status(area: str = "", domain: str = "", entity_id: str = "") -> dict:
         else:
             result_devices.append(entry)
 
-    # 补充 config API 创建但不在 states 中的场景和脚本
-    seen_scene_ids = {s["entity_id"] for s in result_scenes}
+    # 补录：config API 创建的场景/脚本在 reload 之后就会出现在 states 里（实体 id 由 HA 按
+    # alias/name slugify 生成，与 config_key 不同源），所以这里只追加 states 中确实没有的映射项。
+    # 场景的 entity_id 只能来自 states 或 registry 查表，不用 config_key 拼接；脚本域豁免
+    # （script.<config_key> 即真实 id）。area 过滤与单设备全量模式（entity_id 非空）不追加补录。
     scene_name_map = config.get("scene_name_map", {})
-    for map_name, map_slug in scene_name_map.items():
-        eid = f"scene.{map_slug}"
-        if eid not in seen_scene_ids:
-            result_scenes.append({"name": map_name, "entity_id": eid, "state": "idle", "actions": ["activate"]})
-            seen_scene_ids.add(eid)
+    if not entity_id and not area and (not domain or domain == "scene"):
+        for map_name, map_slug in scene_name_map.items():
+            norm_name = str(map_name).casefold().strip()
+            if norm_name in scene_state_names:
+                continue
+            resolved = (_lookup_registered_entity(entities_raw, "scene", map_slug)
+                        if entities_raw is not None else None)
+            if resolved and resolved in scene_state_ids:
+                continue
+            result_scenes.append({
+                "name": map_name,
+                "entity_id": resolved,
+                "state": "unavailable",
+                "actions": ["activate"],
+                **({} if resolved else {"note": (
+                    "注册表不可用，无法解析实体 id" if entities_raw is None
+                    else "注册表中无该 config_key 对应的实体（可能未加载或已改名）")}),
+            })
+            scene_state_names.add(norm_name)
+            if resolved:
+                scene_state_ids.add(resolved)
 
-    seen_script_ids = set()
     script_name_map = config.get("script_name_map", {})
-    for map_name, map_slug in script_name_map.items():
-        eid = f"script.{map_slug}"
-        if eid not in seen_script_ids:
+    if not entity_id and not area and (not domain or domain == "script"):
+        for map_name, map_slug in script_name_map.items():
+            eid = f"script.{map_slug}"
+            if eid in script_state_ids:
+                continue
+            norm_name = str(map_name).casefold().strip()
+            if norm_name in script_state_names:
+                continue
             result_devices.append({"name": map_name, "entity_id": eid, "type": "脚本", "state": "idle", "actions": ["run"]})
-            seen_script_ids.add(eid)
+            script_state_ids.add(eid)
+            script_state_names.add(norm_name)
 
     return {
         "connected": True,
@@ -1723,16 +1764,23 @@ def ha_scene(action: str, name: str = "", config: dict = None, confirm: bool = F
         states = _fetch_domain_states(ha_url, headers, "scene")
         if states is None:
             return _ha_unavailable_error()
-        entity_registry = None
-        if detail:
-            entity_registry = _fetch_entity_registry(ha_url, headers)
+        # 单次 registry 快照（strict：自带 deadline、失败不抛）：detail 的 config_key 解析与
+        # 下面的补录共用同一份，绝不逐实体回落再取（INV-6）。取数失败 ⇒ 空快照 + registry_ok=False
+        try:
+            registry = _fetch_entity_registry_strict(ha_url, headers)
+        except Exception:
+            registry = None
+        registry_ok = registry is not None
+        entity_registry = registry if registry_ok else []
         scenes = []
         seen_entity_ids = set()
+        seen_names = set()
         for s in states:
             attrs = s.get("attributes", {})
             eid = s["entity_id"]
             seen_entity_ids.add(eid)
             entry = {"name": attrs.get("friendly_name", eid), "entity_id": eid, "state": s.get("state", "off")}
+            seen_names.add(str(entry["name"]).casefold().strip())
             if detail:
                 config_key = _resolve_config_key(ha_url, headers, "scene", eid, entity_registry)
                 if config_key:
@@ -1748,22 +1796,38 @@ def ha_scene(action: str, name: str = "", config: dict = None, confirm: bool = F
                 if eid_attr:
                     entry["entities"] = eid_attr if isinstance(eid_attr, list) else [eid_attr]
             scenes.append(entry)
-        # 补充：通过 name_map 查找 config API 创建但不在 states 中的场景
+        # 补录：config API 创建的场景在 reload 之后就会出现在 states 里（实体 id 由 alias/name
+        # slugify 生成），这里只追加 states 中确实没有的映射项；entity_id 只用上面那份快照查表
+        # 解析（零轮询、零额外 IO），解析不到就是 null，不用 config_key 拼一个不存在的 id。
         scene_name_map = cfg.get("scene_name_map", {})
         for map_name, map_slug in scene_name_map.items():
-            eid = f"scene.{map_slug}"
-            if eid not in seen_entity_ids:
-                entry = {"name": map_name, "entity_id": eid, "state": "idle"}
-                if detail:
-                    try:
-                        resp = _requests.get(f"{ha_url}/api/config/scene/config/{map_slug}", headers=headers, timeout=10)
-                        if resp.status_code == 200:
-                            entry["config"] = resp.json()
-                            if "entities" in entry["config"]:
-                                entry["config"]["entities"] = _denormalize_scene_entities(entry["config"]["entities"])
-                    except Exception:
-                        pass
-                scenes.append(entry)
+            norm_name = str(map_name).casefold().strip()
+            if norm_name in seen_names:
+                continue
+            resolved = _lookup_registered_entity(entity_registry, "scene", map_slug)
+            if resolved and resolved in seen_entity_ids:
+                continue
+            entry = {"name": map_name, "entity_id": resolved, "state": "unavailable"}
+            if resolved is None:
+                entry["note"] = ("注册表不可用，无法解析实体 id" if not registry_ok
+                                 else "注册表中无该 config_key 对应的实体（可能未加载或已改名）")
+            if detail:
+                try:
+                    resp = _requests.get(f"{ha_url}/api/config/scene/config/{map_slug}", headers=headers, timeout=10)
+                    if resp.status_code == 200:
+                        entry["config"] = resp.json()
+                        if "entities" in entry["config"]:
+                            entry["config"]["entities"] = _denormalize_scene_entities(entry["config"]["entities"])
+                    elif resp.status_code == 404 and _lookup_slug("scene", map_name) == map_slug:
+                        # 配置在 HA 侧已不存在：现读配置确认映射仍指向该 config_key 才清理（不改该行输出）
+                        # 仅作用于补录行：states 命中行在实体消失后由下一轮补录分支自愈
+                        _unregister_name("scene", map_name)
+                except Exception:
+                    pass
+            scenes.append(entry)
+            seen_names.add(norm_name)
+            if resolved:
+                seen_entity_ids.add(resolved)
         return {"scenes": scenes}
 
     if action == "get":
@@ -1774,15 +1838,36 @@ def ha_scene(action: str, name: str = "", config: dict = None, confirm: bool = F
         states_down = states is None
         entity_id = _find_entity_by_name(states or [], "scene", name)
         config_key = None
+        entity_registry = None
+        # registry 取数失败标记：entity_id 解析不出来时按失败来源决定 note 文案
+        registry_failed = False
         if entity_id:
-            entity_registry = _fetch_entity_registry(ha_url, headers)
+            # states 命中：strict 取一次快照（取数失败按 [] 处理，不抛异常）
+            try:
+                entity_registry = _fetch_entity_registry_strict(ha_url, headers)
+            except Exception:
+                entity_registry = None
+            if entity_registry is None:
+                registry_failed = True
+                entity_registry = []
             config_key = _resolve_config_key(ha_url, headers, "scene", entity_id, entity_registry)
         if not config_key:
-            # 尝试通过 name_map 查找
+            # 回退到 name_map（states 命中但解析不出 unique_id 时同样会走到这里）
             slug = _lookup_slug("scene", name)
             if slug:
                 config_key = slug
-                entity_id = entity_id or f"scene.{slug}"
+                # entity_id 未知时复用同一份快照查表（整段最多 1 次 strict 取数）；
+                # states 不可达（states_down）时不发起 registry 取数；解析不到保持 None，
+                # 不再拼造 scene.<slug>
+                if not entity_id and not states_down:
+                    if entity_registry is None:
+                        try:
+                            entity_registry = _fetch_entity_registry_strict(ha_url, headers)
+                        except Exception:
+                            entity_registry = None
+                        if entity_registry is None:
+                            registry_failed = True
+                    entity_id = _lookup_registered_entity(entity_registry, "scene", slug)
         if not config_key:
             if states_down:
                 return _ha_unavailable_error()
@@ -1793,7 +1878,17 @@ def ha_scene(action: str, name: str = "", config: dict = None, confirm: bool = F
                 config = resp.json()
                 if "entities" in config:
                     config["entities"] = _denormalize_scene_entities(config["entities"])
-                return {"name": name, "entity_id": entity_id, "config": config}
+                result = {"name": name, "entity_id": entity_id, "config": config}
+                if entity_id is None:
+                    result["note"] = ("HA states 不可达，无法解析实体 id" if states_down
+                                      else "注册表不可用，无法解析实体 id" if registry_failed
+                                      else "注册表中无该 config_key 对应的实体（可能未加载或已改名）")
+                return result
+            if resp.status_code == 404 and _lookup_slug("scene", name) == config_key:
+                # 映射仍指向该 config_key ⇒ 配置确已不在 HA：清理本地映射（此分支不带 success 键）
+                _unregister_name("scene", name)
+                return {"name": name, "entity_id": entity_id, "note": "配置已不存在，已清理本地映射"}
+            # 校验不通过（映射指向别的 config_key，或不是 404）：保留原 error 形态，不清理映射
             return {"error": f"HA API 返回 {resp.status_code}: {resp.text[:200]}"}
         except Exception as e:
             return {"error": str(e)}
@@ -1816,7 +1911,17 @@ def ha_scene(action: str, name: str = "", config: dict = None, confirm: bool = F
                 except Exception:
                     pass
                 _register_name("scene", name, config_key)
-                result = {"success": True, "name": name, "entity_id": f"scene.{config_key}", "config_key": config_key}
+                # success 只取决于配置写入是否成功；entity_id 必须是注册表里解析到的真实 id，
+                # 解析不到就是 null，不用 config_key 拼接。哨兵 _VERIFY_UNAVAILABLE 实际值是 ""，
+                # 必须用 is 比较，不能靠真值判断。
+                resolved = _resolve_scene_entity_id(ha_url, headers, config_key)
+                result = {"success": True, "name": name, "entity_id": None, "config_key": config_key}
+                if resolved is _VERIFY_UNAVAILABLE:
+                    result["warning"] = "HA 不可达，未能核实实体 id"
+                elif resolved is None:
+                    result["warning"] = "配置已持久化，但未在注册表中解析到实体（可能尚未加载）；可用 ha_scene list 复查"
+                else:
+                    result["entity_id"] = resolved
                 # 验证配置可被 HA 读取
                 try:
                     cfg_resp = _requests.get(f"{ha_url}/api/config/scene/config/{config_key}", headers=headers, timeout=10)
@@ -1844,13 +1949,32 @@ def ha_scene(action: str, name: str = "", config: dict = None, confirm: bool = F
         states_down = states is None
         entity_id = _find_entity_by_name(states or [], "scene", name)
         config_key = None
+        entity_registry = None
+        # registry 取数失败标记：entity_id 解析不出来时按失败来源决定 note 文案
+        registry_failed = False
         if entity_id:
-            entity_registry = _fetch_entity_registry(ha_url, headers)
+            # states 命中：strict 取一次快照（取数失败按 [] 处理，不抛异常）
+            try:
+                entity_registry = _fetch_entity_registry_strict(ha_url, headers)
+            except Exception:
+                entity_registry = None
+            if entity_registry is None:
+                registry_failed = True
+                entity_registry = []
             config_key = _resolve_config_key(ha_url, headers, "scene", entity_id, entity_registry)
         if not config_key:
             config_key = _lookup_slug("scene", name)
-            if config_key:
-                entity_id = entity_id or f"scene.{config_key}"
+            if config_key and not entity_id and not states_down:
+                # 回退：entity_id 未知才复用/补取 1 次快照查表解析（不轮询；states 不可达时
+                # 不发起 registry 取数）；解析不到保持 None，不再拼造 scene.<config_key>
+                if entity_registry is None:
+                    try:
+                        entity_registry = _fetch_entity_registry_strict(ha_url, headers)
+                    except Exception:
+                        entity_registry = None
+                    if entity_registry is None:
+                        registry_failed = True
+                entity_id = _lookup_registered_entity(entity_registry, "scene", config_key)
         if not config_key:
             if states_down:
                 return _ha_unavailable_error()
@@ -1869,6 +1993,10 @@ def ha_scene(action: str, name: str = "", config: dict = None, confirm: bool = F
                 except Exception:
                     pass
                 result = {"success": True, "name": name, "entity_id": entity_id}
+                if entity_id is None:
+                    result["note"] = ("HA states 不可达，无法解析实体 id" if states_down
+                                      else "注册表不可用，无法解析实体 id" if registry_failed
+                                      else "注册表中无该 config_key 对应的实体（可能未加载或已改名）")
                 try:
                     cfg_resp = _requests.get(f"{ha_url}/api/config/scene/config/{config_key}", headers=headers, timeout=10)
                     if cfg_resp.status_code == 200:
@@ -1890,19 +2018,43 @@ def ha_scene(action: str, name: str = "", config: dict = None, confirm: bool = F
         states_down = states is None
         entity_id = _find_entity_by_name(states or [], "scene", name)
         config_key = None
+        entity_registry = None
+        # registry 取数失败标记：entity_id 解析不出来时按失败来源决定 note 文案
+        registry_failed = False
         if entity_id:
-            entity_registry = _fetch_entity_registry(ha_url, headers)
+            # states 命中：strict 取一次快照（取数失败按 [] 处理，不抛异常）
+            try:
+                entity_registry = _fetch_entity_registry_strict(ha_url, headers)
+            except Exception:
+                entity_registry = None
+            if entity_registry is None:
+                registry_failed = True
+                entity_registry = []
             config_key = _resolve_config_key(ha_url, headers, "scene", entity_id, entity_registry)
         if not config_key:
             config_key = _lookup_slug("scene", name)
-            if config_key:
-                entity_id = entity_id or f"scene.{config_key}"
+            if config_key and not entity_id and not states_down:
+                # 回退：entity_id 未知才复用/补取 1 次快照查表解析（不轮询；states 不可达时
+                # 不发起 registry 取数）；解析不到保持 None，preview 仍可凭 config_key 删除
+                if entity_registry is None:
+                    try:
+                        entity_registry = _fetch_entity_registry_strict(ha_url, headers)
+                    except Exception:
+                        entity_registry = None
+                    if entity_registry is None:
+                        registry_failed = True
+                entity_id = _lookup_registered_entity(entity_registry, "scene", config_key)
         if not config_key:
             if states_down:
                 return _ha_unavailable_error()
             return {"error": f"未找到名为 '{name}' 的场景"}
         if not confirm:
-            return {"preview": True, "name": name, "entity_id": entity_id or f"scene.{config_key}", "message": "确认删除？请再次调用并传 confirm=true"}
+            preview = {"preview": True, "name": name, "entity_id": entity_id, "message": "确认删除？请再次调用并传 confirm=true"}
+            if entity_id is None:
+                preview["note"] = ("HA states 不可达，无法解析实体 id" if states_down
+                                   else "注册表不可用，无法解析实体 id" if registry_failed
+                                   else "注册表中无该 config_key 对应的实体（可能未加载或已改名）")
+            return preview
         try:
             resp = _requests.delete(f"{ha_url}/api/config/scene/config/{config_key}", headers=headers, timeout=10)
             if resp.status_code in (200, 204):
@@ -1912,6 +2064,14 @@ def ha_scene(action: str, name: str = "", config: dict = None, confirm: bool = F
                     pass
                 _unregister_name("scene", name)
                 return {"success": True, "deleted": name}
+            if resp.status_code == 404:
+                if _lookup_slug("scene", name) == config_key:
+                    # 映射仍指向该 config_key ⇒ 配置确已不在 HA：清理本地映射
+                    _unregister_name("scene", name)
+                    return {"success": True, "deleted": name, "note": "配置已不存在，已清理本地映射"}
+                # 校验不通过（映射指向别的 config_key，如同名不同 key）：保留映射，不误删
+                return {"success": True, "deleted": name, "note": "HA 中已无该配置，本地映射保留"}
+            # 非 404 的其他失败保持原 error 形态
             return {"error": f"HA API 返回 {resp.status_code}: {resp.text[:200]}"}
         except Exception as e:
             return {"error": str(e)}
@@ -1927,7 +2087,13 @@ def ha_scene(action: str, name: str = "", config: dict = None, confirm: bool = F
         states_down = states is None
         entity_id = _find_entity_by_name(states or [], "scene", name)
         if entity_id:
-            entity_registry = _fetch_entity_registry(ha_url, headers)
+            try:
+                entity_registry = _fetch_entity_registry_strict(ha_url, headers)
+            except Exception:
+                entity_registry = None
+            if entity_registry is None:
+                # 取数失败按 [] 处理：只是解析不出 config_key，改走下面的 name_map 回退，不抛异常
+                entity_registry = []
             config_key = _resolve_config_key(ha_url, headers, "scene", entity_id, entity_registry)
             if config_key:
                 # states 中能找到的场景，用 scene.turn_on 激活
@@ -2031,7 +2197,17 @@ def ha_scene(action: str, name: str = "", config: dict = None, confirm: bool = F
                 except Exception:
                     pass
                 _register_name("scene", name, config_key)
-                return {"success": True, "name": name, "entity_id": f"scene.{config_key}", "entities": list(entities_config.keys())}
+                # 同 create：success 只取决于快照是否写入成功，entity_id 必须是注册表里解析到的
+                # 真实 id（解析不到为 null）；哨兵 _VERIFY_UNAVAILABLE 真值是 ""，必须用 is 比较。
+                resolved = _resolve_scene_entity_id(ha_url, headers, config_key)
+                result = {"success": True, "name": name, "entity_id": None, "entities": list(entities_config.keys())}
+                if resolved is _VERIFY_UNAVAILABLE:
+                    result["warning"] = "HA 不可达，未能核实实体 id"
+                elif resolved is None:
+                    result["warning"] = "配置已持久化，但未在注册表中解析到实体（可能尚未加载）；可用 ha_scene list 复查"
+                else:
+                    result["entity_id"] = resolved
+                return result
             return {"error": f"快照持久化失败: HA API 返回 {resp.status_code}: {resp.text[:200]}"}
         except Exception as e:
             return {"error": str(e)}
@@ -2112,11 +2288,13 @@ def ha_script(action: str, name: str = "", config: dict = None, confirm: bool = 
             return _ha_unavailable_error()
         scripts = []
         seen_entity_ids = set()
+        seen_names = set()
         for s in states:
             attrs = s.get("attributes", {})
             eid = s["entity_id"]
             seen_entity_ids.add(eid)
             entry = {"name": attrs.get("friendly_name", eid), "entity_id": eid, "state": s.get("state", "off")}
+            seen_names.add(str(entry["name"]).casefold().strip())
             if detail:
                 slug = eid.split(".", 1)[1]
                 try:
@@ -2126,20 +2304,27 @@ def ha_script(action: str, name: str = "", config: dict = None, confirm: bool = 
                 except Exception:
                     pass
             scripts.append(entry)
-        # 补充：通过 name_map 查找 config API 创建但不在 states 中的脚本
+        # 补录：config API 创建的脚本在 reload 之后就会出现在 states 里（script.<slug> 就是真实
+        # entity_id，与 config_key 同源），这里只追加 states 中确实没有的映射项；无需取 registry。
         script_name_map = cfg.get("script_name_map", {})
         for map_name, map_slug in script_name_map.items():
             eid = f"script.{map_slug}"
-            if eid not in seen_entity_ids:
-                entry = {"name": map_name, "entity_id": eid, "state": "idle"}
-                if detail:
-                    try:
-                        resp = _requests.get(f"{ha_url}/api/config/script/config/{map_slug}", headers=headers, timeout=10)
-                        if resp.status_code == 200:
-                            entry["config"] = resp.json()
-                    except Exception:
-                        pass
-                scripts.append(entry)
+            if eid in seen_entity_ids:
+                continue
+            norm_name = str(map_name).casefold().strip()
+            if norm_name in seen_names:
+                continue
+            entry = {"name": map_name, "entity_id": eid, "state": "idle"}
+            if detail:
+                try:
+                    resp = _requests.get(f"{ha_url}/api/config/script/config/{map_slug}", headers=headers, timeout=10)
+                    if resp.status_code == 200:
+                        entry["config"] = resp.json()
+                except Exception:
+                    pass
+            scripts.append(entry)
+            seen_entity_ids.add(eid)
+            seen_names.add(norm_name)
         return {"scripts": scripts}
 
     if action == "get":
