@@ -663,6 +663,18 @@ ha-server 提供 8 个 MCP 工具，通过虚拟磁盘 `/ha/` 目录访问：
 | `ha_scene` | 写 | 管理场景 | 多设备瞬间切换到预设状态 |
 | `ha_script` | 写 | 管理脚本 | 有序列、有延时的多步骤操作 |
 
+> **返回形状（补录行 / 未加载项）**：`ha_status` 的 `scenes`/`devices` 与 `ha_scene list`/`ha_script list`
+> 里，由本地 name→config_key 映射补录出来的行（配置已写入 HA，但实体未加载或已在 HA 内改名）有三个特征：
+> `entity_id` 可能为 `null`（场景域解析不到就是 `null`，绝不拿 config_key 拼一个）、`state` 为
+> `"unavailable"`、**只有解析不到 `entity_id` 时才带 `note`**（解析到真实 id 的行没有 `note`）。`note`
+> 有三种来源：「注册表不可用，无法解析实体 id」/「注册表中无该 config_key 对应的实体（可能未加载或已
+> 改名）」/「HA states 不可达，无法解析实体 id」。`ha_status` 与 `ha_scene list` 只会出现前两种；第三种
+> 出现在 `ha_scene get`（HTTP 200 命中）、`ha_scene update`（成功返回）与 `ha_scene delete` 的 preview 里，
+> 这三处即使调用成功也可能带 `note`。脚本补录行是例外：脚本域豁免，补录的 `script.<config_key>` 就是
+> HA 里的真实 entity_id，`state="idle"`，不带 `note`。这类行按 `name` 操作即可，不要把 `entity_id`
+> 拼进调用。`ha_scene create`/`snapshot` 返回 `entity_id: null` + `warning` 时同理：配置已持久化，
+> 实体尚未加载，稍后用 `ha_scene list` / `activate`（按 name）复查。
+
 ### 9.1 工具选择指南
 
 | 需求 | 使用工具 | 说明 |
@@ -898,7 +910,10 @@ Xiaomi Miot 安装后，HA 中新增以下服务域：
 - `climate`：`temperature` / `hvac_mode`
 - `switch` / `lock` / `cover`（`position`）/ `fan`（`percentage`）/ `humidifier`（`humidity`）
 
-> **注意**：场景通过 REST Config API 持久化，不会出现在 HA states 中（显示 idle 是正常的），但激活功能正常工作。
+> **注意**：场景通过 REST Config API 持久化，reload 之后就会出现在 HA states 中——实体 id 由 HA 按
+> 名称 slugify 生成（中文名走音译），与 `config_key` 不同源。因此 `ha_status`/`ha_scene list` 只在
+> states 缺项时补一行，补录行的 `entity_id` 可能为 `null`、`state="unavailable"`，只有在解析不到 id 时
+> 才带 `note`；按 name 操作即可，激活功能不依赖实体已加载（未加载时走 `scene.apply`）。
 
 **脚本（ha_script）** — 有序列、有延时的多步骤操作：
 
@@ -962,4 +977,32 @@ Xiaomi Miot 安装后，HA 中新增以下服务域：
 | `ha_control` 报错 | 用 `ha_status --entity-id <id>` 查看该实体的 `services` 是否包含目标服务 |
 | 模拟实体不可见 | `input_*` domain 被 `ha_status` 过滤，只能通过 REST API `/api/states` 访问 |
 | 事件推送未收到 | 查 `ha_watcher` stdout 日志；确认 `subscribe_trigger` 订阅成功且条件正确 |
+
+### 13.5 存量自动化引用了不存在的 `scene.<uuid>` 时如何核查
+
+修复前的 `ha_scene create`/`get`/`update`/`delete` 会把 `config_key` 拼成 `scene.<uuid>` 返回（该实体
+在 HA 里并不存在）。若把它写进自动化或脚本，触发时会报 `Unable to find entity` / 日志里出现
+`Entity ID scene.<uuid> is not found`。本次修复只纠正后续返回值，**不会**自动扫描改写已有自动化
+（spec §2 非目标），按下面步骤手工核查：
+
+1. 先取真实场景实体清单：`/ha/ha_scene list`（或 `GET /api/states` 只留 `scene.` 开头的 entity_id）。
+   补录行的 `entity_id` 可能是 `null`，此时记下 `name`，别把 `null` 当引用。
+2. 逐条拉出自动化配置：`/ha/ha_automation list --detail true`（`detail=true` 直接带 `config`）。
+3. 在每条 `config` 里搜 `scene.` 引用，覆盖这几处：
+   - `actions[].action` 为 `scene.turn_on` / `scene.activate` 时，`target.entity_id`、
+     `target.entity_id` 列表、`data.entity_id`
+   - 旧式 `actions[].action == "scene"`（或 `scene.turn_on` 写在 `service_data` 里）
+   - `conditions[].condition == "state"` 且 `entity_id` 以 `scene.` 开头
+   - 同一份配置里的 `script.<config_key>` 引用无需核查：脚本域豁免，`script.<config_key>` 就是 HA 里
+     真实的 entity_id（只有场景 id 与 config_key 不同源），不存在这类幽灵 id
+4. 逐个判定：第 3 步收集到的 id 若不在第 1 步的真实清单里 ⇒ 该引用无效。特征判别：
+   `scene.` 后面是 32 位十六进制（uuid hex）基本可判定是修复前拼装的幽灵 id；真实 id 是名称 slug
+   （ASCII 名 → 小写下划线；中文名 → 音译 slug）。
+5. 修正：`/ha/ha_automation update --name "<规则名>" --config '...'` 重写该条，把 target 换成真实
+   entity_id；随后 `/ha/ha_automation trigger --name "<规则名>"` 触发一次，并在 HA「开发者工具 →
+   操作 → 检查配置」与 HA 日志里确认没有 `is not found`。
+6. 顺带清理残留映射：`ha_scene list` 里 `state="unavailable"` 且带 `note` 的行，说明该行没解析出实体 id —
+   可能是场景未加载或已在 HA 内改名，也可能只是注册表取数不可用，不能据此断定 HA 里已不存在。先按第 1 步
+   的真实清单核对，确认不需要后再用 `/ha/ha_scene delete --name "<场景名>" --confirm true`
+   （HA 侧已 404 时，只有映射值仍指向该 config_key 才会清掉本地映射，否则保留）。
 

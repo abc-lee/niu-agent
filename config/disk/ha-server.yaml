@@ -19,7 +19,7 @@ tools:
   - name: ha_status
     category: read
     short: "查询设备状态（默认精简，entity_id查全量）"
-    long: "查询智能家居设备、场景、自动化的当前状态。默认返回所有设备的精简列表（name/area/entity_id/type/state/actions）。传入 entity_id 返回该设备完整信息（含 services 服务参数定义和 properties 状态属性）。调用带参数服务前先用 entity_id 查询获取参数详情。"
+    long: "查询智能家居设备、场景、自动化的当前状态。默认返回所有设备的精简列表（name/area/entity_id/type/state/actions）。传入 entity_id 返回该设备完整信息（含 services 服务参数定义和 properties 状态属性）。调用带参数服务前先用 entity_id 查询获取参数详情。补录行/未加载项的 entity_id 可能为 null（state=unavailable 并带 note），此时按 name 操作。"
     parameters:
       - name: area
         flag: area
@@ -156,7 +156,7 @@ tools:
   - name: ha_scene
     category: write
     short: "管理场景"
-    long: "管理场景：创建/查看/修改/删除/激活/快照。场景是多设备瞬间切换到预设状态。有序列有延时用 ha_script，条件触发用 ha_automation。entities 参数名使用 ha_status(entity_id=...) 返回的 services 字段中的服务参数名（如 brightness_pct，精简模式不返回 services，需先用 entity_id 查询），程序自动转换为 HA 内部格式"
+    long: "管理场景：创建/查看/修改/删除/激活/快照。场景是多设备瞬间切换到预设状态。有序列有延时用 ha_script，条件触发用 ha_automation。entities 参数名使用 ha_status(entity_id=...) 返回的 services 字段中的服务参数名（如 brightness_pct，精简模式不返回 services，需先用 entity_id 查询），程序自动转换为 HA 内部格式。补录行/未加载项的 entity_id 可能为 null（state=unavailable 并带 note），此时按 name 操作。"
     parameters:
       - name: action
         position: 1

@@ -2610,7 +2610,7 @@ TOOL_SCHEMAS = {
     },
     "ha_status": {
         "name": "ha_status",
-        "description": "查询智能家居设备、场景、自动化的当前状态。默认返回所有设备的精简列表（name/area/entity_id/type/state/actions），用于浏览全局设备。传入 entity_id 返回该设备的完整信息（含 services 服务参数定义和 properties 状态属性）。调用带参数的服务（如 set_temperature/set_fan_mode/select_option）前，先用 entity_id 查询获取参数名和可选值。可按 area 或 domain 过滤减少返回量。",
+        "description": "查询智能家居设备、场景、自动化的当前状态。默认返回所有设备的精简列表（name/area/entity_id/type/state/actions），用于浏览全局设备。传入 entity_id 返回该设备的完整信息（含 services 服务参数定义和 properties 状态属性）。调用带参数的服务（如 set_temperature/set_fan_mode/select_option）前，先用 entity_id 查询获取参数名和可选值。可按 area 或 domain 过滤减少返回量。补录行/未加载项的 entity_id 可能为 null（state=unavailable 并带 note），此时按 name 操作。",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -2706,7 +2706,7 @@ TOOL_SCHEMAS = {
     },
     "ha_scene": {
         "name": "ha_scene",
-        "description": "管理场景：创建/查看/修改(update)/删除/激活/快照场景。场景是多设备瞬间切换到预设状态（如'阅读模式'、'晚安模式'）。有序列有延时用 ha_script，条件触发用 ha_automation。entities 参数名使用 ha_status(entity_id=...) 返回的 services 字段中的服务参数名（如 brightness_pct，精简模式不返回 services，需先用 entity_id 查询），程序自动转换",
+        "description": "管理场景：创建/查看/修改(update)/删除/激活/快照场景。场景是多设备瞬间切换到预设状态（如'阅读模式'、'晚安模式'）。有序列有延时用 ha_script，条件触发用 ha_automation。entities 参数名使用 ha_status(entity_id=...) 返回的 services 字段中的服务参数名（如 brightness_pct，精简模式不返回 services，需先用 entity_id 查询），程序自动转换。补录行/未加载项的 entity_id 可能为 null（state=unavailable 并带 note），此时按 name 操作。",
         "input_schema": {
             "type": "object",
             "properties": {
