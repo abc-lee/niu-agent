@@ -682,6 +682,32 @@ MAX_TOOL_RESULT_CHARS = 30000  # 单个工具结果最大字符数（约 15K-30K
 MAX_TOOL_RESULTS_PER_MESSAGE_CHARS = 200000  # 单消息内 tool 结果合计上限（参考 Claude Code）
 
 
+_TRUNCATION_NOTICE_RE = re.compile(r"\n\n\[截断\][^\n]*已截断至 \d+ 字符[^\n]*$")
+
+
+def _append_tool_timestamp(content: str) -> str:
+    """在工具输出末尾追加 [HH:MM:SS]，并保证总长 ≤ MAX_TOOL_RESULT_CHARS。
+
+    调用方必须先过 _truncate_tool_content（统一关口/防御截断），本函数只处理
+    「刚好带上截断公告、只剩不到 12 字符余量」的边界：保留公告、压缩正文。
+    终态 ≤ 上限 → 后续 _enforce_message_budget / transform_history 的再截断为 no-op。
+    """
+    from datetime import datetime
+
+    suffix = "\n\n[" + datetime.now().strftime("%H:%M:%S") + "]"
+    room = MAX_TOOL_RESULT_CHARS - len(suffix)
+    if len(content) <= room:
+        return content + suffix
+    match = _TRUNCATION_NOTICE_RE.search(content)
+    if match:
+        notice = match.group(0)
+        keep = max(0, room - len(notice))
+        return content[:match.start()][:keep] + notice + suffix
+    # 无尾部截断公告且放不下：宁可不加时间标记，也不静默切掉正文
+    # （29989–30000 区间可能是合法 JSON，切 12 字符会损坏结构）。
+    return content
+
+
 def _truncate_tool_content(content: str, tool_name: str = "") -> str:
     """截断超长工具输出，保留开头部分并添加截断标记。"""
     if len(content) <= MAX_TOOL_RESULT_CHARS:
@@ -1477,6 +1503,7 @@ def agent_runner_loop(
     on_before_llm=None,  # Optional: callback(messages, turn) called before each LLM call; modifies messages[0] in place
     stop_predicate: Callable | None = None,  # 停止穿透：停止判定谓词（默认 None = 全局 is_stop_requested；子 Agent 由 call_subagent 传入）
     on_compression_request=None,  # 统一压缩入口（spec 2026-09-06）：主 Agent runner 传回调执行受控压缩；None=子 Agent 跳过（走保留的响应后 FIFO/占位符化 else 分支）
+    tool_timestamp: bool = False,  # 子 Agent：tool 消息末尾追加 [HH:MM:SS]（历史只读 → 前缀缓存可复用）
 ):
     from agent.runner import clear_stop, drain_supplement, is_stop_requested
     from agent.generic.interruptible import run_interruptibly
@@ -2143,11 +2170,15 @@ def agent_runner_loop(
                         tool_results.append({"tool_use_id": tid, "content": "（工具已执行，无返回值）", "tool_name": tool_name})
                 # 添加tool消息到messages
                 for tool_result in tool_results:
+                    _raw = tool_result["content"]
+                    _content = _truncate_tool_content(_raw, tool_result.get("tool_name", ""))
+                    if tool_timestamp:
+                        _content = _append_tool_timestamp(_content)
                     tool_msg = {
                         "role": "tool",
                         "tool_call_id": tool_result["tool_use_id"],
                         # 冗余截断（统一关口已在 dispatch 后截断 outcome.data），保留作防御性编程
-                        "content": _truncate_tool_content(tool_result["content"], tool_result.get("tool_name", "")),
+                        "content": _content,
                     }
                     # plan 2026-09-10 D8：删 name 字段注入（规范 tool 消息键集仅 role/content/tool_call_id）
                     messages.append(tool_msg)
@@ -2188,11 +2219,15 @@ def agent_runner_loop(
 
         # 添加tool消息（工具结果）
         for tool_result in tool_results:
+            _raw = tool_result["content"]
+            _content = _truncate_tool_content(_raw, tool_result.get("tool_name", ""))
+            if tool_timestamp:
+                _content = _append_tool_timestamp(_content)
             tool_msg = {
                 "role": "tool",
                 "tool_call_id": tool_result["tool_use_id"],
                 # 冗余截断（统一关口已在 dispatch 后截断 outcome.data），保留作防御性编程
-                "content": _truncate_tool_content(tool_result["content"], tool_result.get("tool_name", "")),
+                "content": _content,
             }
             # plan 2026-09-10 D8：删 name 字段注入（规范 tool 消息键集仅 role/content/tool_call_id）
             messages.append(tool_msg)
