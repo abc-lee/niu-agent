@@ -1210,7 +1210,12 @@ async def probe_response_format(request: Request) -> dict:
         if k != "response_format_mode"
     }
     probe_litellm_kwargs["allowed_openai_params"] = ["response_format"]
-    probe_litellm_kwargs["max_tokens"] = 50
+    # 输出上限遵循标准：配置里有 max_tokens 就透传，没有就不传——
+    # 不传 = 模型/服务端默认上限；写死小值会把推理模型的思考链截断，
+    # 结构化输出直接报 finish_reason=length（2026-10-23 本地 qwen3.8 实证：50 → 502）。
+    _configured_max_tokens = config.get("max_tokens") or config.get("maxtokens")
+    if _configured_max_tokens is not None:
+        probe_litellm_kwargs["max_tokens"] = _configured_max_tokens
 
     base_llm_config = {
         "api_type": config.get("type", "openai"),
@@ -1298,9 +1303,16 @@ async def probe_response_format(request: Request) -> dict:
                         chunks.append(chunk)
             except StopIteration as e:
                 mock_response = e.value
-            # stream_error 检查：流式错误 → infra_error（不写配置，端点早返 probe_failed）
+            # stream_error 检查：截断类错误 → model_rejected（降级）；其余 → infra_error（不写配置）
             if mock_response and getattr(mock_response, 'stream_error', False):
-                return "infra_error", f"stream_error: {getattr(mock_response, 'error_msg', '')[:150]}"
+                err_msg = getattr(mock_response, 'error_msg', '') or ''
+                # 结构化输出被输出上限截断（finish_reason=length）是预算/参数问题，
+                # 不是基础设施故障：本档判不支持，交上层继续降级（Tier2/3 → prompt_only），
+                # 不阻断"测试连接并保存"。
+                lowered = err_msg.lower()
+                if "structured output was incomplete" in lowered or "finish_reason=length" in lowered:
+                    return "model_rejected", f"stream_error: {err_msg[:150]}"
+                return "infra_error", f"stream_error: {err_msg[:150]}"
             text = mock_response.content if mock_response and hasattr(mock_response, 'content') and mock_response.content else "".join(chunks)
             if response_format is not None and response_format.get("type") == "json_schema":
                 tier = _classify_probe_response_tier1(text)

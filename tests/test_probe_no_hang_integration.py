@@ -112,7 +112,10 @@ async def _call_probe_direct(config: dict) -> dict:
         if k != "response_format_mode"
     }
     probe_litellm_kwargs["allowed_openai_params"] = ["response_format"]
-    probe_litellm_kwargs["max_tokens"] = 50  # 当前代码值，测试用例会验证是否截断
+    # 与 compat.py 同口径：只用配置里的 max_tokens，不写死探测上限
+    _configured_max_tokens = config_lower.get("max_tokens") or config_lower.get("maxtokens")
+    if _configured_max_tokens is not None:
+        probe_litellm_kwargs["max_tokens"] = _configured_max_tokens
 
     base_llm_config = {
         "api_type": config_lower.get("type", "openai"),
@@ -145,13 +148,20 @@ async def _call_probe_direct(config: dict) -> dict:
             session = LiteLLMSession(cfg=base_llm_config)
             gen = session.chat(messages=messages, response_format=response_format)
             chunks = []
+            mock_response = None
             try:
                 while True:
                     chunk = next(gen)
                     if isinstance(chunk, str):
                         chunks.append(chunk)
-            except StopIteration:
-                pass
+            except StopIteration as e:
+                mock_response = e.value
+            if mock_response and getattr(mock_response, "stream_error", False):
+                err_msg = getattr(mock_response, "error_msg", "") or ""
+                lowered = err_msg.lower()
+                if "structured output was incomplete" in lowered or "finish_reason=length" in lowered:
+                    return "model_rejected", f"stream_error: {err_msg[:150]}"
+                return "infra_error", f"stream_error: {err_msg[:150]}"
             text = "".join(chunks)
             if response_format is not None and response_format.get("type") == "json_schema":
                 tier = _classify_probe_response_tier1(text)
@@ -356,7 +366,7 @@ async def test_doubao_empty_provider_no_thinking():
 async def test_doubao_volcengine_thinking_disabled_json_complete():
     """场景 9：豆包 + volcengine + thinking:disabled + json_object 响应不截断。
 
-    验证 max_tokens=50 是否导致 JSON 截断误判。
+    验证探测不再写死 max_tokens（配置缺省时不传上限），JSON 输出不应被截断。
     期望：≤120s 返回，若 result=supported+json_object 则响应未被截断。
     """
     llm = _load_config(DOUBAO_CONFIG_PATH)

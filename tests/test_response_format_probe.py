@@ -874,6 +874,117 @@ async def test_try_tier_classifies_bad_request_error():
 
 
 @pytest.mark.asyncio
+async def test_stream_error_structured_output_truncation_degrades_not_infra():
+    """流式结构化输出被输出上限截断 → model_rejected（降级 prompt_only），不是 infra_error。
+
+    回归：本地推理模型 max_tokens 不足时服务端返回
+    "structured output was incomplete (finish_reason=length)"，旧实现归为基础设施错误，
+    导致"测试连接并保存"被阻断。
+    """
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from fastapi import Request
+
+    from niu_api.compat import probe_response_format
+
+    class _Resp:
+        stream_error = True
+        error_msg = (
+            "litellm.MidStreamFallbackError: litellm.APIConnectionError: "
+            "structured output was incomplete (finish_reason=length); increase the output budget"
+        )
+        content = ""
+        thinking = ""
+
+    def _chat(**kwargs):
+        def gen():
+            if False:  # pragma: no cover
+                yield ""
+            return _Resp()
+
+        return gen()
+
+    mock_request = AsyncMock(spec=Request)
+    mock_request.json = AsyncMock(return_value={})
+
+    with patch("niu_api.llm_proxy.get_llm_config") as mock_get_config:
+        mock_get_config.return_value = {
+            "apikey": "test-key",
+            "apibase": "https://test.example.com",
+            "model": "test-model",
+            "type": "openai",
+            "litellm_kwargs": {},
+        }
+
+        with patch("agent.generic.litellm_adapter.LiteLLMSession") as mock_session_class:
+            mock_session = MagicMock()
+            mock_session.chat.side_effect = _chat
+            mock_session_class.return_value = mock_session
+
+            result = await probe_response_format(mock_request)
+
+    assert result["result"] == "supported"
+    assert result["mode"] == "prompt_only"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "configured,expected",
+    [(32768, 32768), (None, None), (0, None)],
+)
+async def test_probe_max_tokens_follows_config(configured, expected):
+    """探测输出上限遵循配置：有就透传，没有/为 0 就不传（用服务端默认）。
+
+    不允许再写死探测专用 token 上限（推理模型的思考 token 也占该预算）。
+    """
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from fastapi import Request
+
+    from niu_api.compat import probe_response_format
+
+    class _Resp:
+        stream_error = False
+        error_msg = ""
+        content = '{"verdict": "SCHEMA_ENFORCED"}'
+        thinking = ""
+
+    def _chat(**kwargs):
+        def gen():
+            if False:  # pragma: no cover
+                yield ""
+            return _Resp()
+
+        return gen()
+
+    body = {
+        "apikey": "test-key",
+        "apibase": "https://test.example.com",
+        "model": "test-model",
+        "type": "openai",
+        "litellm_kwargs": {},
+    }
+    if configured is not None:
+        body["max_tokens"] = configured
+
+    mock_request = AsyncMock(spec=Request)
+    mock_request.json = AsyncMock(return_value=body)
+
+    with patch("niu_api.llm_proxy.get_llm_config") as mock_get_config:
+        mock_get_config.return_value = body
+        with patch("agent.generic.litellm_adapter.LiteLLMSession") as mock_session_class:
+            mock_session = MagicMock()
+            mock_session.chat.side_effect = _chat
+            mock_session_class.return_value = mock_session
+
+            result = await probe_response_format(mock_request)
+
+    assert result["result"] == "supported"
+    sent = mock_session_class.call_args.kwargs["cfg"]["litellm_kwargs"]
+    assert sent.get("max_tokens") == expected
+
+
+@pytest.mark.asyncio
 async def test_try_tier_classifies_param_conflict_combination():
     """_try_tier 捕获 BadRequestError 文案含 combination → param_conflict → 端点 probe_failed 阻断。
 
