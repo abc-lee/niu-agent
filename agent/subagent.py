@@ -4,6 +4,7 @@ SubAgent Module
 子 Agent 调用机制。
 """
 
+import copy
 import json
 import os
 import re
@@ -1141,6 +1142,13 @@ def call_subagent(
             from .generic.litellm_adapter import parse_capabilities_deny
             instance.suspended_client.backend.capabilities_deny = parse_capabilities_deny(
                 llm_config.get("capabilities"), llm_config.get("model", ""))
+            # R4：挂起快照里的 system 可能存的是挂起那天的日期 → 恢复开跑前改写为今天（快照是本次会话私有副本，原地刷新）
+            if suspended_messages and isinstance(suspended_messages[0], dict) \
+                    and suspended_messages[0].get("role") == "system":
+                _refresh_system_current_date(suspended_messages[0])
+            # 挂起快照里的 system_message 也同步刷新（再次挂起时会被原样存回）
+            if isinstance(instance.suspended_system_message, dict):
+                _refresh_system_current_date(instance.suspended_system_message)
             result_text, return_value, last_reply = _run_agent_loop(
                 client=instance.suspended_client,
                 system_prompt="",  # 向后兼容（system_message 非 None 时分支选择生效）
@@ -1787,7 +1795,8 @@ def _prepare_resume_messages(archive_messages: list) -> list | None:
     # （调用方按未命中处理：unregister + 全新派发 + warning，不泄漏占名实例）
     if not all(isinstance(m, dict) for m in archive_messages):
         return None
-    _head = archive_messages[0]
+    # 深拷贝档首：下方 _refresh_system_current_date 原地改写，不得污染原档对象（JSON 档复用同一 dict）
+    _head = copy.deepcopy(archive_messages[0])
     if isinstance(_head, dict) and _head.get("role") == "system":
         # transform_history 会丢 system → 剥离净化后还原头部（resumed 分支需要完整 messages）
         cleaned = [_head] + transform_history(archive_messages[1:])
@@ -1802,6 +1811,9 @@ def _prepare_resume_messages(archive_messages: list) -> list | None:
         # 尾部空 assistant 脚手架剔除（transform_history 已把悬空 tool_calls 降级纯文本，
         # 空 content 时产物为空 assistant 消息——连段剥除防 provider 400）
         cleaned.pop()
+    if cleaned and isinstance(cleaned[0], dict) and cleaned[0].get("role") == "system":
+        # R4：旧档 system 残留旧日期 → 开跑前改写为今天（深拷贝副本，不改原档）
+        _refresh_system_current_date(cleaned[0])
     return cleaned if cleaned else None
 
 
