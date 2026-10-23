@@ -82,8 +82,8 @@ async def test_anthropic_shape_parse():
 
 @pytest.mark.asyncio
 async def test_window_field_priority():
-    """窗口字段优先级：context_length > max_input_tokens > context_window > top_provider.context_length，
-    首个非空整数胜出（含 OpenRouter 嵌套形单独命中与无字段不挂键）。"""
+    """窗口字段优先级：context_length > max_input_tokens > context_window > top_provider.context_length
+    > meta.n_ctx（llama.cpp/NInfer），首个非空整数胜出（含 OpenRouter 嵌套形单独命中与无字段不挂键）。"""
     from niu_api.compat import list_models
 
     body = {"apiKey": "sk", "apiBase": "https://openrouter.ai/api/v1"}
@@ -100,6 +100,10 @@ async def test_window_field_priority():
             {"id": "d", "top_provider": {"context_length": 400}},
             # 无窗口字段 → 不挂键
             {"id": "e"},
+            # llama.cpp / NInfer：上下文只在 meta.n_ctx
+            {"id": "f", "meta": {"n_ctx": 204800}},
+            # 显式 context_length 优先于 meta.n_ctx
+            {"id": "g", "context_length": 100, "meta": {"n_ctx": 204800}},
         ]
     }
     with patch("urllib.request.urlopen", return_value=_ok_response(payload)):
@@ -112,6 +116,8 @@ async def test_window_field_priority():
     assert by_id["c"]["context_window"] == 300
     assert by_id["d"]["context_window"] == 400
     assert "context_window" not in by_id["e"]
+    assert by_id["f"]["context_window"] == 204800
+    assert by_id["g"]["context_window"] == 100
 
 @pytest.mark.asyncio
 async def test_404_returns_unsupported():

@@ -1542,12 +1542,16 @@ def _fetch_models_sync(api_base: str, api_key: str, api_type: str) -> tuple[int,
 
 def _extract_context_window(item: dict):
     """单条模型条目提取上下文窗口：依次检查 context_length / max_input_tokens /
-    context_window / top_provider.context_length（OpenRouter 嵌套形），首个非空整数胜出；无则 None。
+    context_window / top_provider.context_length（OpenRouter 嵌套形）/ meta.n_ctx
+    （llama.cpp/NInfer），首个非空整数胜出；无则 None。
     """
     candidates = [item.get("context_length"), item.get("max_input_tokens"), item.get("context_window")]
     top_provider = item.get("top_provider")
     if isinstance(top_provider, dict):
         candidates.append(top_provider.get("context_length"))
+    meta = item.get("meta")
+    if isinstance(meta, dict):
+        candidates.append(meta.get("n_ctx"))
     for value in candidates:
         if isinstance(value, int) and not isinstance(value, bool) and value > 0:
             return value
