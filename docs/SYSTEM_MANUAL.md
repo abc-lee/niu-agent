@@ -482,7 +482,7 @@ journal 已移出睡眠管道（见下节）。entity → dream 的顺序依赖�
 
 #### journal 定时任务（每日 18 点直执行）
 
-journal 走 scheduler 内置定时任务 `journal-daily`（cron `0 18 * * *`，`task_kind='subagent'`、`agent_name='journal-daily-agent'`）：后台线程**直执行**——静默调起后台子 Agent `journal-daily-agent`（`visibility: hidden`）自理整理：经 session-manager `get_messages` 直读 messages.db 分页拉取新消息（`after_time` 起点，created_at 秒粒度严格大于过滤），起点由 journal.md 内最近一条整理条目的落款「覆盖至 YYYY-MM-DD HH:MM:SS」（空格分隔、「覆盖至」后无冒号）自判（**落款时间即水位**；无落款按首次整理取最新 200 条），提取写入 journal.md 并在条目末尾更新落款时间。**严禁经 ChatQueue enqueue**——日志内容写进 messages.db 会反污染上下文窗口。避让纪律：活跃对话期复用 scheduler backend-busy 轮询等待（二次确认防抖、超时兜底放行）；运行中重复触发去重跳过；get_messages 瞬时故障（reason=transient）或分页中途 invalid_after_id（如 /new 并发清库）本轮放弃不更新落款，下轮自然重试。可通过 `context.journalScheduledEnabled=false` 关闭（默认开启）。
+journal 走 scheduler 内置定时任务 `journal-daily`（cron `0 18 * * *`，`task_kind='subagent'`、`agent_name='journal-daily-agent'`）：后台线程**直执行**——静默调起后台子 Agent `journal-daily-agent`（`visibility: hidden`）自理整理：经 session-manager `get_messages` 直读 messages.db 分页拉取新消息（`after_time` 起点，created_at 秒粒度严格大于过滤），起点由 journal.md 内最近一条整理条目的落款「覆盖至 YYYY-MM-DD HH:MM:SS」（空格分隔、「覆盖至」后无冒号）自判（**落款时间即水位**——水位取**本批末条消息 `created_at` 截断到秒后再减 1 秒**，不是整理动作发生的时刻：`after_time` 严格大于过滤，不减会漏掉与末条同秒到达的新消息，重复条目由提示词的 content 级去重兜底；末条 `created_at` 为空按本轮失败处理不落款），无落款按首次整理取最新 200 条，提取写入 journal.md 并在条目末尾更新落款时间。**严禁经 ChatQueue enqueue**——日志内容写进 messages.db 会反污染上下文窗口。避让纪律：活跃对话期复用 scheduler backend-busy 轮询等待（二次确认防抖、超时兜底放行）；运行中重复触发去重跳过；get_messages 瞬时故障（reason=transient）或分页中途 invalid_after_id（如 /new 并发清库）本轮放弃不更新落款，下轮自然重试。可通过 `context.journalScheduledEnabled=false` 关闭（默认开启）。
 
 #### 例行数据 daily 区域（轻提醒注入区）
 

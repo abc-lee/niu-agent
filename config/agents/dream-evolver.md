@@ -440,7 +440,7 @@ last_tested: YYYY-MM-DD
   - 复活为 active 时清零为 0
   - 新建 skill 默认为 0
 - `created`：创建日期
-- `last_tested`：最近一次验证或修改日期；**写当天日期**（取 system prompt 里的 Current Time，不是你处理的消息的日期）
+- `last_tested`：最近一次验证或修改日期；**写当天日期**（取 system prompt 最后一行的 `Current Date`），不是你处理的消息的日期
 
 ### description 写法要点
 

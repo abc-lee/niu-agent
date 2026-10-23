@@ -65,6 +65,16 @@ def _run_job(monkeypatch, tmp_path, subagent_result, task=None):
     return call_mock
 
 
+def _program_created(tmp_path):
+    """tmp_path 下只留程序侧写入——conftest 的全局隔离夹具（_isolate_niu_config /
+    _isolate_import_time_niu_paths，d565f3d7 2026-10-15 起）预先建 tmp_path/isolated-niu、
+    tmp_path/.niu 并把日志/镜像/F1 也指向 tmp_path/isolated*，故旧断言
+    `list(tmp_path.iterdir()) == []` 自那以后恒假（与落款水位语义无关，属测试债）。
+    夹具产物一律以 `isolated` 前缀或 `.niu` 命名，除此之外的任何条目才是程序侧越界写入。"""
+    return sorted(p.name for p in tmp_path.iterdir()
+                  if not p.name.startswith("isolated") and p.name != ".niu")
+
+
 # ---------------------------------------------------------------------------
 # 1. 触发分派与直执行分支（严禁经 ChatQueue；显式拒绝不落兜底）
 # ---------------------------------------------------------------------------
@@ -253,6 +263,11 @@ def test_journal_mds_carry_get_messages_trim_and_single_query_semantics():
         for token in ("message_id", "<已折叠>", "<已精简>", "too_large",
                       "仅遍历分页调用", "invalid_message_id"):
             assert token in md, f"{name}：新语义标记 {token!r} 必须在场"
+        # 新水位口径钉（计划 2026-10-23 Task 4）：末条 created_at 减 1 秒在场，
+        # 旧「整理完成时刻 / 当前整理时间」口径退役
+        assert "减 1 秒" in md, f"{name}：减 1 秒水位口径必须在场"
+        assert "当前整理时间" not in md, f"{name}：旧「当前整理时间」口径必须已退役"
+        assert "整理完成时刻" not in md, f"{name}：旧「整理完成时刻」口径必须已退役"
 
 
 def test_journal_daily_agent_hidden_pins():
@@ -275,7 +290,7 @@ def test_journal_daily_agent_hidden_pins():
 def test_success_writes_no_cursor_and_no_file(monkeypatch, tmp_path):
     """正常返回即成功：程序侧零游标读写、零导出文件（水位线由子 Agent 按标记自理）。"""
     _run_job(monkeypatch, tmp_path, NORMAL_JSON)
-    assert list(tmp_path.iterdir()) == [], "程序侧不得产生任何文件"
+    assert _program_created(tmp_path) == [], "程序侧不得产生任何文件"
 
 
 def test_no_report_stays_silent(monkeypatch, tmp_path):
@@ -364,7 +379,7 @@ def test_bad_results_swallow_to_log(monkeypatch, tmp_path, bad_result):
     """failure/incomplete/overflow 仅落日志：不抛异常、不写任何状态（下轮 cron 自然重试）。"""
     call_mock = _run_job(monkeypatch, tmp_path, bad_result)
     assert call_mock.call_count == 1
-    assert list(tmp_path.iterdir()) == []
+    assert _program_created(tmp_path) == []
 
 
 # ---------------------------------------------------------------------------
