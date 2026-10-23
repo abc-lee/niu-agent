@@ -411,12 +411,13 @@ def test_agent_runner_loop_accepts_system_message_param():
 
 
 def test_subagent_builds_static_and_dynamic_segments():
-    """子 Agent 应构建静态段（agent.md + user_info）+ 动态段（Current Time）。"""
+    """子 Agent 应构建静态段（agent.md + user_info）+ 动态段（Current Date）。"""
     from agent.subagent import build_subagent_system_segments
 
     static, dynamic = build_subagent_system_segments("file-processor")
     assert "Current Time" not in static, "静态段不应含 Current Time"
-    assert "Current Time" in dynamic, "动态段应含 Current Time"
+    assert "Current Time" not in dynamic
+    assert "Current Date" in dynamic
     assert len(static) > 100, "静态段应含 agent.md 正文"
 
 

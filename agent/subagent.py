@@ -273,7 +273,6 @@ def _run_agent_loop(
     memory_context: Any | None = None,  # 阶段二新增：异步子 Agent 进度数据
     resumed_messages: list | None = None,  # 阶段四新增：断点续传消息列表
     stop_predicate: Any | None = None,  # 停止穿透：子 Agent 循环层停止谓词（LLM 层 stop_check 同源）
-    on_before_llm: Any | None = None,  # 每轮 LLM 前回调（Current Time 刷新），透传给 agent_runner_loop
 ) -> tuple[str, Any, str]:
     """
     执行 agent_runner_loop 并收集结果（提取自 call_subagent）
@@ -323,7 +322,7 @@ def _run_agent_loop(
         memory_context=memory_context,  # 阶段二新增：透传给 agent_runner_loop
         resumed_messages=resumed_messages,  # 阶段四新增：透传给 agent_runner_loop
         stop_predicate=stop_predicate,  # 停止穿透：子 Agent 循环层停止谓词（LLM 层 stop_check 同源）
-        on_before_llm=on_before_llm,  # 每轮 LLM 前刷新 Current Time（透传）
+        tool_timestamp=True,  # 工具消息末尾追加 [HH:MM:SS]（缓存友好：历史只读）
     )
     result = ""
     last_reply = ""  # 只记录最后一次 reply 的内容（完成通知用）
@@ -555,40 +554,64 @@ def get_subagent_prompt(agent_name: str) -> str:
 
 _CURRENT_TIME_RE = re.compile(r"Current Time: \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}")
 
+_CURRENT_DATE_RE = re.compile(r"Current Date: \d{4}-\d{2}-\d{2}")
+_TOOL_TIME_HINT = "工具输出末尾的 `[HH:MM:SS]` 是该条结果写回时的时刻（元信息，不是工具返回内容）。"
 
-def _refresh_subagent_current_time(messages: list, turn: int) -> None:
-    """会话内每轮刷新子 Agent system 的 Current Time（on_before_llm 回调）。
 
-    子 Agent 的 system_message 在 call_subagent 启动时构建一次（build_subagent_system_segments
-    实时取 datetime.now），长任务（entity/dream 多轮循环、dream-evolver 跨午夜）会话内
-    Current Time 会漂移。此回调在 agent_runner_loop 每轮 LLM 前被调用，原地更新
-    messages[0] 中的 Current Time 行为实时值；无匹配行时不变（安全）。
+def _refresh_system_current_date(system_message: dict) -> None:
+    """把 system 里的时间行改写为今天的 Current Date（续跑/挂起恢复专用）。
 
-    假设：str 格式下 re.sub 作用于整个 content——内置模板（agent.md/user_info/boundary/
-    ask-guide）实证不含 "Current Time: YYYY-MM-DD HH:MM:SS" 精确模式，不会误替换；
-    用户自写 agent.md 若含该精确模式会被一并替换（与 Claude list 分支的 search 选块
-    保护不同，str 分支无块边界——接受该风险，docstring 声明假设）。Claude list 分支
-    同理：极端场景下若静态块恰含精确模式，会先命中静态块而漏掉动态块刷新（概率极低、
-    后果=该轮时间陈旧——等同修复前现状，接受）。
-
-    Args:
-        messages: agent_runner_loop 的消息列表（messages[0] 为 system）
-        turn: 当前轮次（从 1 开始；本函数不使用，签名与 on_before_llm 回调一致）
+    - 新档 `Current Date: YYYY-MM-DD` → 移到末尾并更新为今天
+    - 旧档 `Current Time: YYYY-MM-DD HH:MM:SS` → 改写为 `Current Date: 今天`
+    - 完全没有时间行（降级构建的旧档）→ 在末尾补 `Current Date: 今天`
+    - 缺 `_TOOL_TIME_HINT` 时补上（与新建 system 一致）
+    - 只删**最后一条**时间行，避免误删静态提示词里的示例行；调用两次结果相同（幂等）
     """
-    if not messages or messages[0].get("role") != "system":
+    if not isinstance(system_message, dict) or system_message.get("role") != "system":
         return
-    from datetime import datetime
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    content = messages[0].get("content")
+    from datetime import date
+
+    new_line = f"Current Date: {date.today().isoformat()}"
+    _line_re = re.compile(r"\s*Current (?:Time|Date): \d{4}-\d{2}-\d{2}(?: \d{2}:\d{2}:\d{2})?\s*")
+
+    def _fix(text: str) -> str:
+        lead = text[: len(text) - len(text.lstrip("\n"))]
+        lines = text.split("\n")
+        for idx in range(len(lines) - 1, -1, -1):
+            if _line_re.fullmatch(lines[idx]):
+                del lines[idx]
+                # 连带去掉紧邻的一个空行，避免留下三连换行
+                if idx < len(lines) and not lines[idx].strip():
+                    del lines[idx]
+                elif idx > 0 and not lines[idx - 1].strip():
+                    del lines[idx - 1]
+                break
+        while lines and not lines[-1].strip():
+            lines.pop()
+        body = "\n".join(lines).rstrip("\r").lstrip("\n")
+        if _TOOL_TIME_HINT not in body:
+            body = (body + "\n\n" + _TOOL_TIME_HINT) if body else _TOOL_TIME_HINT
+        # 保留原有前导换行（Anthropic 动态块恒以 "\n\n" 与静态块相隔）
+        return lead + ((body + "\n\n" + new_line) if body else new_line)
+
+    content = system_message.get("content")
     if isinstance(content, list):
-        # Claude 格式：Current Time 在动态段（content[1]；content[0] 静态段有 cache_control）。
-        # 用正则 search 选块（R1-P2：子串 "Current Time" 可能命中静态块且无格式匹配时漏刷）
+        target = None
         for block in content:
-            if isinstance(block, dict) and block.get("type") == "text" and _CURRENT_TIME_RE.search(block.get("text", "")):
-                block["text"] = _CURRENT_TIME_RE.sub(f"Current Time: {now_str}", block["text"])
-                return
+            if not isinstance(block, dict) or block.get("type") != "text":
+                continue
+            if "cache_control" in block:
+                continue  # 带 cache_control 的静态块永不改写（改它会废掉缓存前缀）
+            if _CURRENT_TIME_RE.search(block.get("text", "")) or _CURRENT_DATE_RE.search(block.get("text", "")):
+                target = block
+                break
+        if target is not None:
+            target["text"] = _fix(target["text"])
+        else:
+            # 旧档动态块可能为空串（降级构建）：补一个只含说明+日期的文本块
+            content.append({"type": "text", "text": _fix("\n\n")})
     elif isinstance(content, str):
-        messages[0]["content"] = _CURRENT_TIME_RE.sub(f"Current Time: {now_str}", content)
+        system_message["content"] = _fix(content)
 
 
 def build_subagent_system_segments(agent_name: str) -> tuple:
@@ -600,7 +623,7 @@ def build_subagent_system_segments(agent_name: str) -> tuple:
     Returns:
         (static_system, dynamic_system):
         - static_system: agent.md 正文 + user_info_section（字节稳定，cache 前缀）
-        - dynamic_system: Current Time（每分钟变化，不 cache）
+        - dynamic_system: 脑区列表 + Current Date（会话内恒定）
     """
     # 1. 获取子 Agent 提示词（从配置文件）
     static_system = get_subagent_prompt(agent_name)
@@ -644,12 +667,15 @@ def build_subagent_system_segments(agent_name: str) -> tuple:
     if _SUBAGENT_ASK_GUIDE_MARKER not in static_system:
         static_system += "\n\n" + _SUBAGENT_ASK_GUIDE_TEMPLATE
 
-    # 5. 动态段：Current Time
-    try:
-        from datetime import datetime
-        dynamic_system = f"\n\nCurrent Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}" + _brain_region_section
-    except Exception:
-        dynamic_system = _brain_region_section
+    # 5. 动态段：脑区列表（会话内恒定）+ 元信息说明 + 日期（system 最后一行，只到「天」）。
+    #    时分秒由工具输出末尾的 [HH:MM:SS] 承载（agent_runner_loop tool_timestamp=True）。
+    #    整段替换原 try/except（原 except 分支会把 dynamic_system 退化成只剩脑区，导致无日期）。
+    from datetime import date
+    dynamic_system = (
+        _brain_region_section
+        + "\n\n" + _TOOL_TIME_HINT
+        + f"\n\nCurrent Date: {date.today().isoformat()}"
+    )
 
     return static_system, dynamic_system
 
@@ -962,7 +988,11 @@ def call_subagent(
             static_system = get_subagent_prompt(agent_name)
         except Exception:
             static_system = f'You are {agent_name} sub-agent. Complete the task efficiently.'
-        dynamic_system = ""
+        from datetime import date
+        dynamic_system = (
+            "\n\n" + _TOOL_TIME_HINT
+            + f"\n\nCurrent Date: {date.today().isoformat()}"
+        )
 
     # 3. 组装 system message（按解析后 provider 决定格式：anthropic 路由 list+cache_control / 其他 str）
     # 判据=apibase/type+model 解析路由（审计 #6——「model 名含 claude」会泄漏 Claude 专属字段进 OpenAI 协议请求）
@@ -1124,7 +1154,6 @@ def call_subagent(
                 resumed_messages=suspended_messages,
                 supplement_queue=instance.supplement_queue,
                 stop_predicate=_stop_fn,  # 停止穿透：恢复路径重建谓词（闭包实例 E1 + 按实例 source 区分）
-                on_before_llm=_refresh_subagent_current_time,
             )
             _maybe_suspend_session(
                 unique_name=answer_unique_name,
@@ -1172,7 +1201,6 @@ def call_subagent(
                 memory_context=memory_context,  # 阶段二新增：透传给 _run_agent_loop
                 resumed_messages=resumed_messages,  # T2 续跑：命中档时透传续跑上下文（None=全新派发不启用）
                 stop_predicate=_stop_fn,  # 停止穿透：异步路径用顶部绑定（仅 terminate）
-                on_before_llm=_refresh_subagent_current_time,
             )
         finally:
             # 异步路径不在这里 unregister（_run_subagent_async 的 finally 负责）
@@ -1272,7 +1300,6 @@ def call_subagent(
                 supplement_queue=supplement_queue,  # 新增：传给 _run_agent_loop
                 memory_context=memory_context,  # 阶段二新增：透传给 _run_agent_loop
                 stop_predicate=_stop_fn,  # 停止穿透：同步路径用顶部绑定（user = global or terminate / 非 user = 仅 terminate）
-                on_before_llm=_refresh_subagent_current_time,
             )
             # §5.5 后处理：必须在 try 块内、finally 之前执行（异常时跳过，直接进 finally）
             _maybe_suspend_session(
