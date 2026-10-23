@@ -8,6 +8,16 @@
 
 ---
 
+### 2026-10-24
+
+#### 子 Agent 前缀缓存修复：system 只留日期 + 工具输出带 [HH:MM:SS]
+
+- **病灶**：子 Agent 的 `Current Time` 写在 system 里、每轮由 `_refresh_current_time` 原地重写 `messages[0]`；首个不同点 ≈12,048 token，服务端按块复用 KV cache（实测 4K 块规则：`cached = max(0,(floor(P/4096)−1)×4096)`，P 为首个不同 token）→ 每轮 `cached_tokens=0`，dream 28 轮全量重预填充；主 Agent 因动态块在倒数第二条附近，命中 121,104（92–96%）。
+- **改法**：system 只保留 `Current Date: YYYY-MM-DD`（派发时写一次，会话内恒定）+ 一句「`[HH:MM:SS]` 是元信息」；时分秒由 `agent_runner_loop(tool_timestamp=True)` 追加到每条新工具输出末尾（子 Agent 独有，主 Agent 不传）；删除每轮回调与 `_run_agent_loop` 的 `on_before_llm` 死参；续跑两路径（JSON 档深拷贝 / 挂起快照）开跑前把日期改写为今天；带 `cache_control` 的块永不改写。
+- **提示词**：`dream-evolver` 的 `last_tested` 取 system 末行 `Current Date`；`journal-agent`/`journal-daily-agent` 的覆盖水位改为「末批末条 `created_at` 截断到秒再减 1 秒」（`after_time` 为秒级严格大于，减 1 秒防同秒漏读；重复由内容级去重兜底）——**此为对既有「整理完成时刻」拍板的偏离，数据安全优先，待用户复核**。
+- **验证**：目标回归 14 个文件 **252 passed**；邻接 10 个文件 81 passed / 4 skipped；真机 `cached_tokens` 待用户重启 Niu 后跑一次睡眠核对（预期未裁剪轮次 ≥ 上一轮 90%）。
+- **顺手修测试债**：`tests/test_journal_daily_scheduler.py` 两处 `list(tmp_path.iterdir()) == []` 自 conftest 全局隔离夹具（d565f3d7）起恒假，改为排除 `isolated*`/`.niu` 夹具产物后再断言（语义不变）。
+
 ### 2026-10-23
 
 #### 梦境工作集切片重做：40% 上下文 token 预算 + 完整轮对齐 + msg_id 完成协议
