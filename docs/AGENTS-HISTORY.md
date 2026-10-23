@@ -17,7 +17,8 @@
 - **完成协议改为 msg_id**：dream-evolver 报 `processed_msg_id=<记录 meta 行 msg_id 的值>`；程序用 `msg_id_to_turn_end` 查表 + `turn_last_msg_ids` 校验（只接受完整轮末条），彻底移除行号映射与压缩偏移算术。四态：缺失/未知/半轮/drop 无进度一律删 0 + WARNING（宁少删）。
 - **实现**：`agent/md_mirror.py` 重写 build（`BuildResult` 十字段：status/f3_lines/f2_lines/est_tokens/turns/compressed/f3_est_tokens/msg_id_to_turn_end/turn_last_msg_ids/f3_turn_ends）；`niu_api/compat.py` 睡眠循环按状态机改写（预算/ratio 每睡眠取一次、`_f2_total` 预读容错、overflow 删 0 才 WARNING）；`config/agents/dream-evolver.md` 完成标记段重写（轮边界的机械定义、只在整轮处理完后报、单行一个 id）。
 - **验证**：`pytest` 目标套件 **142 passed**（md_f3/md_relay/dream_helpers/dream_segment/sleep_reorder/t6/incomplete/checkpoints/subagent_failure/cursor_retirement）；`grep` 确认 `covered_all`/`_f3_max_bytes`/`F3_MAX_BYTES`/`dreamWorksetBytes` 在 `agent/ niu_api/ tests/ tests_entity_loop/ config/` 零命中；零背景 Agent 提示词理解度检查一轮通过（能定位 F3 末条记录并输出正确 `processed_msg_id`）。
-- **约束**：未跑全量 pytest；未连真实 LLM/LightRAG；`~/.niu` 未被测试写入；`niu.app` 打包副本由 `bash launcher/build.sh` 再生。
+- **真机验证（2026-10-23 20:11）**：睡眠触发后 entity relay 按完整轮搬 768 行进 F2；`build_f3: 18 轮 → 768 行，est=38947/81920（预算 40%），压缩=False`；dream 用 **20 分 07 秒**消化 100 条记录/18 轮，上报 `processed_msg_id=14212f62-…`（与 F3 末条记录一致），删除 `768/768` 行，F2 排空；上下文 prompt_tokens 110,262（54% 窗口，低于 80% 裁剪线）。对比旧 64KB 字节预算需多轮且切半轮，现单轮完成。
+- **约束**：测试全程 mock（未连真实 LLM/LightRAG、未写 `~/.niu`）；真机验证由运行中的 Niu 自身完成；未跑全量 pytest；未打包（`niu.app` 由 `bash launcher/build.sh` 再生）；版本 0.5.8 → 0.5.9（仅改 `VERSION`）。
 
 ### 2026-10-22
 
