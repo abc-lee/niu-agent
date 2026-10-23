@@ -163,7 +163,7 @@ def test_compat_entry_zero_dream_cursor_read(tmp_path):
     """compat 入口：残留 dream 游标文件在盘也不得被读取（spy Path.read_text）。"""
     home = tmp_path
     niu_dir = home / ".niu"
-    niu_dir.mkdir(parents=True)
+    niu_dir.mkdir(parents=True, exist_ok=True)  # conftest 已按用例建过 tmp/.niu
     (niu_dir / "last_dream_evolve.json").write_text(
         json.dumps({"last_dream_evolve_id": "m2"}), encoding="utf-8")
 

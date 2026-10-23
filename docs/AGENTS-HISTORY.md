@@ -8,6 +8,17 @@
 
 ---
 
+### 2026-10-23
+
+#### 梦境工作集切片重做：40% 上下文 token 预算 + 完整轮对齐 + msg_id 完成协议
+
+- **病灶**：F3 工作集按写死 64KB **字节**切（`F3_MAX_BYTES_DEFAULT`），切点是任意消息记录边界 → 常把一轮工具对话切成两半；梦境处理半小时对话量要 2 小时以上，且残片导致重复劳动与错误提取。
+- **用户钉死的边界**：预算 = 模型上下文窗口 × 40%（token，纯 40%，不扣系统/工具开销）；一轮 = `role=user` 记录起、到下一条 user 前止（HA/定时任务触发的 user 同样成界）；F1→F2 relay 只搬完整轮（`strict_turn_ends`），F2 内轮由 relay 保证完整（`all_turn_ends`）；选点比较「扩大代价 vs 回缩代价」，相等取 prev；选中轮超预算时整轮压缩——省略中间 tool 输出，保留最后一次工具调用组（按 `tool_call_id` 配对）与 F3 末条记录；token = `TokenCalculator.count_text`（DeepSeek 分词器）× `~/.niu/token_calibration.json` 的 ratio；溢出保留「删 F3 行数 ÷ 3」，向下吸附完整轮末；删除 `dreamWorksetBytes`。
+- **完成协议改为 msg_id**：dream-evolver 报 `processed_msg_id=<记录 meta 行 msg_id 的值>`；程序用 `msg_id_to_turn_end` 查表 + `turn_last_msg_ids` 校验（只接受完整轮末条），彻底移除行号映射与压缩偏移算术。四态：缺失/未知/半轮/drop 无进度一律删 0 + WARNING（宁少删）。
+- **实现**：`agent/md_mirror.py` 重写 build（`BuildResult` 十字段：status/f3_lines/f2_lines/est_tokens/turns/compressed/f3_est_tokens/msg_id_to_turn_end/turn_last_msg_ids/f3_turn_ends）；`niu_api/compat.py` 睡眠循环按状态机改写（预算/ratio 每睡眠取一次、`_f2_total` 预读容错、overflow 删 0 才 WARNING）；`config/agents/dream-evolver.md` 完成标记段重写（轮边界的机械定义、只在整轮处理完后报、单行一个 id）。
+- **验证**：`pytest` 目标套件 **142 passed**（md_f3/md_relay/dream_helpers/dream_segment/sleep_reorder/t6/incomplete/checkpoints/subagent_failure/cursor_retirement）；`grep` 确认 `covered_all`/`_f3_max_bytes`/`F3_MAX_BYTES`/`dreamWorksetBytes` 在 `agent/ niu_api/ tests/ tests_entity_loop/ config/` 零命中；零背景 Agent 提示词理解度检查一轮通过（能定位 F3 末条记录并输出正确 `processed_msg_id`）。
+- **约束**：未跑全量 pytest；未连真实 LLM/LightRAG；`~/.niu` 未被测试写入；`niu.app` 打包副本由 `bash launcher/build.sh` 再生。
+
 ### 2026-10-22
 
 #### ha-server MCP：场景/脚本补录重复与幽灵 entity_id 修复（main `7e3b88a4` 起，SDD 三 Task）

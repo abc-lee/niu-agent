@@ -271,7 +271,7 @@ lightrag_insert_entity(name="路由器断网排查", entity_type="skill", descri
    - **判断归属**：看当前实体是否属于某个已有脑区（如已有"Python开发脑区"，新实体"FastAPI"就属于它）
    - **适合就连**：`lightrag_insert_relation(src_id="Python开发脑区", tgt_id="FastAPI", relation="包含")`
    - **不适合不强求**：列表内无合适脑区时按语义连默认脑区（人物→`人际关系脑区`，工作→`工作事务脑区`，生活→`生活事务脑区`，机构→`组织机构脑区`，知识技能→`知识体系脑区`，文档→`文档库脑区`，聊天杂项→`聊天历史脑区`）
-   - 当天对话中出现的实体同时连 `YYYY-MM-DD会话` 日期节点（直接建链，节点自动存在，见特殊节点表）
+   - 对话中出现的实体同时连 `YYYY-MM-DD会话` 日期节点（直接建链，节点自动存在，见特殊节点表）；这里的日期取**该条消息 meta 行 `ts` 字段的日期**（例如 `"ts": "2026-10-22T21:47:48"` → `2026-10-22会话`），不是你运行时的日期
 
 5. **用户画像关联**（最后做）：将实体与用户实体连接，标注用户与该实体的关系
    - `lightrag_insert_relation(src_id=用户实体名, tgt_id=entity, relation=关系类型)`——用户实体名用 system prompt 注入的「## 用户信息」中的**姓名**（不用称呼）
@@ -440,7 +440,7 @@ last_tested: YYYY-MM-DD
   - 复活为 active 时清零为 0
   - 新建 skill 默认为 0
 - `created`：创建日期
-- `last_tested`：最近一次验证或修改日期
+- `last_tested`：最近一次验证或修改日期；**写当天日期**（取 system prompt 里的 Current Time，不是你处理的消息的日期）
 
 ### description 写法要点
 
@@ -544,7 +544,7 @@ description: Use when processing Office documents (Word, Excel, PowerPoint) that
   - `relation`：关系类型（必填，有语义的动词或名词）
 - `lightrag_edit_entity(entity_name, description, entity_type, new_name, allow_rename, allow_merge)` — 修改已有实体的属性（不改创建新实体）。`description`/`entity_type` 会直接覆盖旧值（追加场景自行用 `<SEP>` 拼接保留旧信息；精简场景直接给归纳结果）。`new_name` 可重命名实体（需 `allow_rename=True`）。`allow_merge=True` 时，如果 `new_name` 对应的实体已存在，则合并而非报错
 - `lightrag_edit_relation(source_entity, target_entity, keywords, new_keywords, new_description, new_weight)` — 修改已有关系。`source_entity`/`target_entity`/`keywords` 用于定位关系（`keywords` 是关系关键词，非必填，不指定则匹配两实体间所有关系）。`new_keywords`/`new_description`/`new_weight` 为新值
-- `lightrag_merge_entities(source_entities, target_entity, merge_strategy, target_entity_data)` — 合并多个实体为一个（用于修复实体碎片化）。`source_entities` 是数组（可合并多个源实体）。`merge_strategy` 指定合并策略。`target_entity_data` 指定目标实体的属性
+- `lightrag_merge_entities(source_entities, target_entity, merge_strategy, target_entity_data)` — 合并多个实体为一个（用于修复实体碎片化）。`source_entities` 是数组（可合并多个源实体）。`merge_strategy` 与 `target_entity_data` 的合法取值/结构**以该工具描述（schema）为准**，调用前先看工具参数说明，不要自己编造取值
 - `lightrag_delete_entity(entity_name)` — 删除实体（纠错场景：实体整体错误或其指代的事物已不复存在时应当使用，见阶段B步骤1）
 - `lightrag_delete_relation(source_entity, target_entity, keywords)` — 删除关系（纠错场景：错误关系应当使用，见阶段B步骤1）。`source_entity`/`target_entity` 定位两端实体。`keywords` 非必填，不指定则删除两实体间所有关系
 - `lightrag_search_entities(query, top_k, keywords, fields)` — 搜索实体。`query` 必填。`top_k` 默认 10，建议：纯名存在性检查用 top_k=20 + fields=["entity_name","entity_type"]（不占上下文），实体名+属性查询保持 top_k=5。**同一实体只查一次，查到结果即落定，不反复重查**（见「收敛铁律」）。`keywords` 为字符串数组，**必须提供**——填**具体名词：实体名/专有名词/技术术语**（对应图谱检索的低层关键词；local 语义搜索只用这一层），不要填宽泛主题短语。例：query="定时任务管理" → keywords=["定时任务", "任务调度"]；query="SQLite数据库" → keywords=["SQLite"]。你自身就是大模型，自己提取关键词即可；不传会触发知识图谱内部再调一次大模型做关键词提取，既慢又浪费。`fields` 指定返回字段
@@ -560,19 +560,33 @@ description: Use when processing Office documents (Word, Excel, PowerPoint) that
 - `read(file_path)` — Skill 读取
 - `bash(command)` — 执行 shell 命令，仅用于步骤 C5 删除 skill（mv 到 .trash/）
 
-## 会话边界
+## 轮的边界（机械定义）
 
-按语义判断会话是否结束：若文件末尾的会话尚未完结（如提问未得到回答、工具调用缺少对应结果、话题明显中断），把它完整留给下一轮处理。时间间隔不代表会话边界。
+文件是记录的序列，每条记录第一行是 meta（形如 `{"msg_id": "…", "role": "user"}`）。
+
+**一轮 = 从一条 `role` 为 `user` 的记录开始，到下一条 `role` 为 `user` 的记录之前的所有记录**（含中间的 assistant 与 tool 记录）。文件里给你的每一轮都是完整的；最后一轮也有明确的末条记录。
+
+不要按「会话看起来结束了没有」判断——那是另一套语义，程序不认。你要报的只是「你处理到哪一条记录」。
+
+如果某个轮你没能完整处理（中途停下），就把这一整轮留给下一轮：**不报这一轮的任何 msg_id**；此时报你**最后一个完整处理完的轮**的末条记录。整条回复只在最后一行输出这一个 `processed_msg_id`。时间间隔不代表边界。
 
 ## 完成标记
 
-**收尾是强制的，不是可选的**：当你处理完全部消息（阶段A/B/C 走完）后，**立即结束**——输出 `[梦境进化报告]` + `@end` + `processed_line`。报告只是文本，程序靠 `@end` 识别你已完成、靠 `processed_line` 删除已处理的 F3 前缀——**漏掉它们 = 程序以为你还没做完 = 下次重跑同一批，等于白干**。报告写完就输出 `@end`，禁止报告后再发起任何查询或"补充处理"。
+**收尾是强制的，不是可选的**：当你处理完全部消息（阶段A/B/C 走完）后，**立即结束**——输出 `[梦境进化报告]` + `@end` + `processed_msg_id`。报告只是文本，程序靠 `@end` 识别你已完成、靠 `processed_msg_id` 删除已处理的记录前缀——**漏掉它们 = 程序以为你还没做完 = 下次重跑同一批，等于白干**。报告写完就输出 `@end`，禁止报告后再发起任何查询或"补充处理"。
 
-处理完成后，在最终回复中包含 `@end`，最后一行输出：
+处理完成后，在最终回复中输出报告，然后**单独一行**输出 `@end`，再**最后一行**输出：
 
-processed_line=<行号>
+processed_msg_id=<该记录 meta 行里 msg_id 的值>
 
-`<行号>` 是你实际处理到的最后一条记录的最后一行的行号（read 工具显示的行号，含该记录后的空行）。文件中没有任何记录时，输出 `@end` 和 `processed_line=0`——文件必有内容才会收到本次调用（空文件程序不会派发），无需处理空文件场景；有记录但判断全部无价值时，processed_line 仍应报到末条记录末行——提炼为零不等于未处理。因会话边界留置给下一轮的尾部记录，不计入 processed_line——以你实际处理到的最后一条完整会话的末行为准。不要输出其他格式的行号标记。
+`@end` 必须独占一行、前后不留其他文字；`processed_msg_id` 必须是整条回复的最后一行，其后不得再有内容。
+
+每条记录的第一行是 meta，形如 `{"msg_id": "3f2b9c1e-8a4d-4f6b-9c2e-1d7a5b8f0c33", "role": "assistant"}`；`msg_id` 就是引号里那串字符（上面只是格式示意，**必须抄你正在处理的记录里的真实值，不要抄这个示例**）。
+
+`<该记录 meta 行里 msg_id 的值>` 指**你已处理到的最后一条完整轮的末条记录**：从它的 meta 行 `"msg_id"` 字段**逐字复制**，不加引号、不改写、不自造。若该末条记录的 msg_id 为空，就报**同一轮内它前面最近的一条非空 msg_id**；该轮所有记录的 msg_id 都为空则**不输出**完成标记（程序判为缺失、什么都不删，下次整轮重跑）。
+
+只有**处理完整个轮**（该轮从第一条记录到末条记录都走完阶段A/B/C）才输出完成标记。只处理了半轮就把这一轮整轮留给下一轮，**不输出这一轮的 msg_id**——程序只认「轮末条记录」的 msg_id；报了轮内非末条会被判为半轮、本次什么都不删（等于白干），不会帮你删对。
+
+判定整轮全部无价值也要报最后一条完整轮末条的 msg_id——提炼为零不等于未处理。整条回复只有最后一行这一个 `processed_msg_id=`。
 
 ## 回复格式（直接在回复中输出，不要写文件）
 
@@ -582,7 +596,7 @@ processed_line=<行号>
 
 ```
 [梦境进化报告]
-处理范围：共 {count} 条消息
+处理范围：共 {count} 条消息（{count} = 你已处理并上报范围内的记录条数，含 user/assistant/tool 每条计 1；留置未处理的轮不计入）
 实体精加工：{n} 个实体
   - 描述精简：{n1} 个
   - 时间链创建：{n2} 条关系

@@ -278,7 +278,8 @@ def _call_dream_evolver_on_f3(llm_config, f3_path=None) -> str:
     p = f3_path or F3_PATH
     task = (
         f"本次待精加工的内容在文件 `{p}` 中。请按你的输入规范用 read 工具分段读取并完成知识图谱精加工，"
-        "完成后输出 @end 和 processed_line 行号。"
+        "完成后输出 @end，并在最后一行输出 processed_msg_id= 后紧跟你已处理到的最后一条完整轮末条记录的 "
+        "msg_id（从其 meta 行逐字复制，不加引号）。"
     )
     return call_subagent_with_auto_answer(
         agent_name="dream-evolver",
@@ -289,17 +290,32 @@ def _call_dream_evolver_on_f3(llm_config, f3_path=None) -> str:
     )
 
 
-def _parse_and_drop_f2(dream_result: str, f3_lines: int, f2_path=None) -> tuple[int, str]:
-    """解析 processed_line 并触发 F2 前缀删除；纯同步。
+def _parse_and_drop_f2(dream_result: str, result: "BuildResult", f2_path=None) -> tuple[int, str]:
+    """解析 processed_msg_id 并按 plan §2 判序触发 F2 前缀删除；纯同步。
 
-    f3_lines 是 build_f3_from_f2 返回值由调用方透传的硬上界。
+    result 是 agent.md_mirror.BuildResult：msg_id_to_turn_end（msg_id → 所属轮末的 F2 行数）、
+    turn_last_msg_ids（每轮「自末条向前第一条非空 msg_id」）、f2_lines（drop 的硬上界）。
+    判序：0 正则未命中（缺失）→ 1 不在 map（未知）→ 2 在 map 但非轮末条（半轮）→ 3 drop。
+    返回 (删除行数, 被删前缀末条 msg_id)；缺失/未知/半轮/drop 无进度一律 (0, "") + WARNING（不误删）。
     """
-    m = re.search(r"processed_line\s*[=:\s]\s*(\d+)", dream_result or "")
-    if m is None:
-        logger.warning("[Tidy] dream-evolver 未输出 processed_line — F2 不删除")
-        return 0, ""
     from agent.md_mirror import drop_f2_prefix
-    return drop_f2_prefix(int(m.group(1)), max_lines=f3_lines, f2_path=f2_path)
+
+    m = re.search(r"processed_msg_id\s*[=:\s]\s*['\"]?([0-9A-Za-z_-]+)['\"]?", dream_result or "")
+    if m is None:
+        logger.warning("[Tidy] dream-evolver 未输出 processed_msg_id — F2 不删除（缺失）")
+        return 0, ""
+    msg_id = m.group(1)
+    turn_end = (result.msg_id_to_turn_end or {}).get(msg_id)
+    if turn_end is None:
+        logger.warning(f"[Tidy] dream-evolver processed_msg_id 不在本轮 F3 记录内（未知）: {msg_id} — F2 不删除")
+        return 0, ""
+    if msg_id not in set(result.turn_last_msg_ids or []):
+        logger.warning(f"[Tidy] dream-evolver processed_msg_id 非完整轮末条（半轮）: {msg_id} — F2 不删除")
+        return 0, ""
+    deleted_lines, dropped_msg_id = drop_f2_prefix(turn_end, max_lines=result.f2_lines, f2_path=f2_path)
+    if deleted_lines == 0:
+        logger.warning(f"[Tidy] dream-evolver 上报轮末（F2 第 {turn_end} 行）但 drop 无进度 — F2 不动")
+    return deleted_lines, dropped_msg_id
 
 def truncate_message_content(content: str, max_chars: int = 500) -> str:
     """
@@ -2492,9 +2508,12 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                 logger.warning("[Tidy] Sleep interrupted after entity-extractor (woke up)")
                 return {"status": "interrupted", "reason": "woke_up"}
 
-            # 2/3. dream-evolver（v3 多轮子循环：F2 头部重建 F3 工作集 → 自读报行号 → 删 F2 前缀；
-            # 终止判据 covered_all=本轮 F3 涵盖全量 F2，非「F2 删空」——会话边界合法留置尾部时 F2 永不删空）
-            from agent.md_mirror import F2_PATH, build_f3_from_f2, drop_f2_prefix
+            # 2/3. dream-evolver（v4 多轮子循环：按 **token 预算**（窗口×40%）从 F2 头部切「完整轮」
+            # 前缀重建 F3 → dream 自读 F3 报 processed_msg_id → 删 F2 前缀到所属轮末；
+            # 终止判据 = 无完整轮（no_complete_turn）或 F2 删空（旧「F3 涵盖全量 F2」判据已废），
+            # 会话边界留置的尾轮天然留在 F2 等下次）
+            from agent.context_assembler import calibration
+            from agent.md_mirror import F2_PATH, F3_PATH, build_f3_from_f2, drop_f2_prefix
 
             def _f2_line_count() -> int:
                 """F2 当前行数（与 md_mirror 同法剥离 split 尾部伪影，使边界值==显示行数）。"""
@@ -2504,15 +2523,50 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                     _lines.pop()
                 return len(_lines)
 
+            # 预算与校准倍率每睡眠取一次（与主 Agent 上下文预算同口径）
+            ratio = calibration.get_ratio()
+            budget = int(context_window_tokens * 0.4)
+
             while True:
-                f2_total = _f2_line_count() if os.path.exists(F2_PATH) else 0
+                if budget <= 0:
+                    # 防御：生产窗口有下限，此分支仅测试可达
+                    logger.warning(
+                        f"[Tidy] dream-evolver: token 预算非法（budget={budget}, "
+                        f"window={context_window_tokens}）— 不派发"
+                    )
+                    break
+                try:
+                    f2_total = _f2_line_count() if os.path.exists(F2_PATH) else 0
+                except Exception as e:
+                    # 预读 IO 失败：按 malformed（IO 失败）处理——尽力清空 F3 后停，
+                    # 不让异常穿到外层 except 变成笼统 error
+                    logger.error(f"[Tidy] dream-evolver: F2 预读失败（IO 失败）: {e} — 本轮放弃")
+                    try:
+                        with open(F3_PATH, "w", encoding="utf-8"):
+                            pass
+                    except Exception as clear_err:
+                        logger.error(f"[Tidy] dream-evolver: 清空 F3 失败（需人工核查）: {clear_err}")
+                    break
                 if f2_total == 0:
                     break  # D5：F2 空/不存在 → 无梦境待处理
-                f3_lines = await asyncio.to_thread(build_f3_from_f2)
-                if f3_lines == 0:
-                    logger.error(f"[Tidy] dream-evolver: F2 有内容（{f2_total} 行）但 build_f3 返回 0（畸形停摆），本轮放弃")
+                build_res = await asyncio.to_thread(build_f3_from_f2, budget, ratio)
+                if build_res.status == "no_complete_turn":
+                    logger.info(f"[Tidy] dream-evolver: F2（{f2_total} 行）无完整轮 — 不派发，下次重跑")
                     break
-                covered_all = f3_lines >= f2_total  # ★ 本轮 F3 是否涵盖全量 F2
+                if build_res.status == "malformed":
+                    logger.error(f"[Tidy] dream-evolver: build_f3 malformed（F2 {f2_total} 行）— 本轮放弃")
+                    break
+                if build_res.f3_lines == 0:
+                    # 不可达防御：status==ok 蕴含至少一个完整轮 ⇒ f3_lines>0
+                    logger.info(f"[Tidy] dream-evolver: build_f3 ok 但 f3_lines=0（不可达防御）— 本轮放弃")
+                    break
+                logger.info(
+                    f"[Tidy] dream workset: window={context_window_tokens} budget={budget} "
+                    f"est={build_res.est_tokens}（{build_res.est_tokens / budget:.0%}） "
+                    f"turns={build_res.turns} compressed={build_res.compressed} "
+                    f"f3_lines={build_res.f3_lines} f2_lines={build_res.f2_lines} "
+                    f"f3_est_tokens={build_res.f3_est_tokens}"
+                )
                 dream_result = await asyncio.to_thread(_call_dream_evolver_on_f3, llm_config)
                 logger.info(f"[Tidy] dream-evolver result: {dream_result[:200]}")
                 # dream-evolver 游标已退役（工程五七件套）：只删 F2 前缀，无任何游标读写
@@ -2523,29 +2577,45 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                         logger.warning(f"[Tidy] dream-evolver failure: {dream_result[:200]} — F2 不动，下次重跑")
                     break
                 if _is_subagent_overflow(dream_result):
+                    # 溢出：÷3 部分进度必须向下吸附到 ⌊f3_lines/3⌋ 之前最近的完整轮末；
+                    # 无候选则不删、下次整轮重试（既有 ÷3 机制下可接受的停摆形态）
                     overflow_info = _extract_overflow_info(dream_result)
-                    logger.warning(
-                        f"[Tidy] dream-evolver overflow: {overflow_info.get('turns_completed', 0)} turns — "
-                        f"drop 前 ⌊{f3_lines}/3⌋ 行部分进度后中断"
-                    )
+                    idx = max(1, build_res.f3_lines // 3)
+                    candidates = [f2_end for f3_end, f2_end in build_res.f3_turn_ends if f3_end <= idx]
+                    if not candidates:
+                        logger.warning(
+                            f"[Tidy] dream-evolver overflow: {overflow_info.get('turns_completed', 0)} turns — "
+                            f"⌊{build_res.f3_lines}/3⌋={idx} 之前无完整轮末候选，删 0，整轮下次重试"
+                        )
+                        break
+                    target_f2_end = max(candidates)
                     deleted_lines, _dropped_msg_id = await asyncio.to_thread(
-                        drop_f2_prefix, max(1, f3_lines // 3), f3_lines
+                        drop_f2_prefix, target_f2_end, max_lines=build_res.f2_lines
                     )
                     if deleted_lines:
-                        logger.info(f"[Tidy] dream-evolver 本轮完成：overflow 部分进度删前 {deleted_lines} 行")
+                        logger.info(
+                            f"[Tidy] dream-evolver overflow: {overflow_info.get('turns_completed', 0)} turns — "
+                            f"⌊{build_res.f3_lines}/3⌋={idx} → 删到 F2 第 {target_f2_end} 行（轮末）后中断，"
+                            f"删前 {deleted_lines}/{f2_total} 行"
+                        )
+                    else:
+                        logger.warning(
+                            f"[Tidy] dream-evolver overflow: {overflow_info.get('turns_completed', 0)} turns — "
+                            f"⌊{build_res.f3_lines}/3⌋={idx} → 拟删到 F2 第 {target_f2_end} 行但 drop 无进度，"
+                            f"删 0，F2 不动，下次整轮重试"
+                        )
                     break
-                deleted_lines, _done_msg_id = await asyncio.to_thread(_parse_and_drop_f2, dream_result, f3_lines)
+                deleted_lines, _done_msg_id = await asyncio.to_thread(_parse_and_drop_f2, dream_result, build_res)
                 if deleted_lines:
-                    logger.info(f"[Tidy] dream-evolver 本轮完成：删 F2 前 {deleted_lines}/{f2_total} 行")
-                else:
-                    logger.warning("[Tidy] dream-evolver 未输出有效 processed_line 或删除无进度 — F2 不动")
-                if deleted_lines == 0 and not covered_all:
-                    break  # 零进度防空转（M 无效/校验失败分支）
+                    logger.info(
+                        f"[Tidy] dream-evolver 本轮完成：删 F2 前 {deleted_lines}/{f2_total} 行"
+                        f"（前缀末条 msg_id={_done_msg_id}）"
+                    )
+                if deleted_lines == 0:
+                    break  # 零进度防空转（缺失/未知/半轮/drop 无进度，WARNING 已由 _parse_and_drop_f2 发）
                 if not is_sleeping():
                     logger.warning("[Tidy] Sleep interrupted in dream-evolver loop (woke up)")
                     return {"status": "interrupted", "reason": "woke_up"}
-                if covered_all:
-                    break  # ★ 终止判据：本轮 F3 已涵盖全量 F2
 
             # 补全会话日期链（循环退出后一次收尾全覆盖；幂等图补边扫描，方法内部已容错）
             await asyncio.to_thread(runner._ensure_session_chain)

@@ -79,9 +79,16 @@ OVERFLOW_JSON = json.dumps({
     "partial_result": "已处理 120/500 个",
 })
 
+#: F1 种子里的 DB 外尾段 id：严格 relay（strict_turn_ends）不剪末轮 → 前缀剪走后它常驻 F1
+TAIL_ID = "inc-tail-not-in-db"
 
 class _FakeCalc:
+    """计数缝：主 Agent 口径 count_message_single；build 口径 count_text（逐记录原文）。"""
+
     def count_message_single(self, role, content, tool_calls=None):
+        return 100
+
+    def count_text(self, text):
         return 100
 
 
@@ -120,6 +127,7 @@ def _tidy_incomplete_patches(subagent_result, call_mock):
     """
     return [
         mock.patch("agent.token_calculator.TokenCalculator.get", return_value=_FakeCalc()),
+        mock.patch("agent.context_assembler.calibration.get_ratio", return_value=1.0),
         mock.patch("niu_api.compat._read_context_window_tokens", return_value=8000),
         mock.patch("niu_api.chat.get_or_create_runner", return_value=_FakeRunner()),
         mock.patch("agent.subagent.call_subagent_with_auto_answer", call_mock),
@@ -175,6 +183,11 @@ class TestTidyContextImplIncomplete:
                 msg_id="inc-seed-not-in-db", created_at="t", role="user", content="种子",
             )
             assert mdm.append_record(block, mdm.F1_PATH)
+            # 严格 relay 不剪末轮：再种一条做尾段，前缀才剪得动（梦境循环随之被真实驱动）
+            block_tail = mdm.format_message_record(
+                msg_id=TAIL_ID, created_at="t", role="user", content="种子尾段",
+            )
+            assert mdm.append_record(block_tail, mdm.F1_PATH)
             result = asyncio.run(_tidy_context_impl({"mode": "sleep", "session_id": "t"}, chat_lock_already_held=True))
         return result, write_mock, call_mock, mdm.F1_PATH, f2_path
 
@@ -202,15 +215,25 @@ class TestTidyContextImplIncomplete:
     def test_normal_result_cuts_f1_no_compress_cursor(self):
         """对照：正常返回时 relay 剪切执行、且 compress 游标零写（T6 退役反向钉）。
 
-        entity 成功 → relay 剪切 F1 至空 → 梦境循环删空 F2；compress 游标已随压缩退役消亡。
+        entity 成功 → 前缀剪进 F2（F1 只剩 DB 外末轮尾段）→ 梦境循环被真实驱动，
+        dream 无 processed_msg_id → 删 0 退出；compress 游标已随压缩退役消亡。
         """
-        result, write_mock, _call, _f1, _f2 = self._run_sleep_tidy(NORMAL_JSON)
+        result, write_mock, call_mock, f1, f2 = self._run_sleep_tidy(NORMAL_JSON)
         assert result.get("status") == "ok", f"tidy 应正常结束: {result}"
+        assert "dream-evolver" in [c.kwargs.get("agent_name") for c in call_mock.call_args_list], (
+            "前缀已剪进 F2 → 梦境循环应被驱动（非 D5 短路）"
+        )
         compress_writes = [
             d for d in self._cursor_writes(write_mock)
             if d.get("last_compress_id")
         ]
         assert compress_writes == [], "compress 游标已退役，零写"
+        with open(f1, encoding="utf-8") as f:
+            f1_text = f.read()
+        assert f'"msg_id": "{TAIL_ID}"' in f1_text, "成功提炼后 F1 只剩未处理的末轮尾段"
+        assert '"msg_id": "inc-seed-not-in-db"' not in f1_text, "已提炼前缀应剪出 F1"
+        with open(f2, encoding="utf-8") as f:
+            assert '"msg_id": "inc-seed-not-in-db"' in f.read(), "剪下前缀应追加到 F2"
 
 
 

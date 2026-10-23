@@ -26,7 +26,8 @@ from unittest import mock
 import agent.md_mirror as mdm
 
 NORMAL_JSON = json.dumps({"ok": True})
-PROCESSED_LINE_ALL = "\n处理完成 @end\nprocessed_line=3"  # 单记录（3 行）全删
+#: entity 上报足够大的行号 → relay 吸附到末个严格轮末（前缀进 F2，末轮留 F1 尾段）
+PROCESSED_LINE_ALL = "\n处理完成 @end\nprocessed_line=999999"
 
 
 def _make_msgs(ids):
@@ -47,6 +48,10 @@ class _FakeCalc:
         self.tokens_per_msg = tokens_per_msg
 
     def count_message_single(self, role, content, tool_calls=None):
+        return self.tokens_per_msg
+
+    def count_text(self, text):
+        """build 口径：逐记录原文 token 数（plan §3 计数缝）。"""
         return self.tokens_per_msg
 
 
@@ -74,7 +79,8 @@ def _run_sleep(call_mock, *, msg_ids=("m1", "m2"), tokens_per_msg=100,
 
     - Path.home → 隔离 tmp 目录（游标文件读写全部落在 tmp，缺失即空游标）
     - store：内存消息表 + 删除/更新留痕（delete_messages_by_ids/update_message 记录调用并同步裁剪 db）
-    - seed_f1：非 None 时向隔离 F1 写入一条该 msg_id 的种子记录（entity 步真实执行）
+    - seed_f1：非 None 时向隔离 F1 写入这些 msg_id 的 user 种子记录（entity 步真实执行；
+      至少两条，严格 relay 才剪得动前缀——末轮天然留 F1）
     返回 (result, write_mock, call_mock, store, ctx)；ctx 含 deleted_batches/updated/home/db。
     """
     from niu_api.compat import _tidy_context_impl
@@ -110,6 +116,7 @@ def _run_sleep(call_mock, *, msg_ids=("m1", "m2"), tokens_per_msg=100,
 
     patches = [
         mock.patch("agent.token_calculator.TokenCalculator.get", return_value=_FakeCalc(tokens_per_msg)),
+        mock.patch("agent.context_assembler.calibration.get_ratio", return_value=1.0),
         mock.patch("niu_api.compat._read_context_window_tokens", return_value=context_window),
         mock.patch("niu_api.chat.get_or_create_runner", return_value=_FakeRunner()),
         mock.patch("agent.subagent.call_subagent_with_auto_answer", call_mock),
@@ -135,21 +142,23 @@ def _run_sleep(call_mock, *, msg_ids=("m1", "m2"), tokens_per_msg=100,
         stack.enter_context(mock.patch("agent.md_mirror.F2_PATH",
                                        str(pathlib.Path(tempfile.mkdtemp(prefix="t4_reorder_")) / "f2.md")))
         if seed_f1 is not None:
-            block = mdm.format_message_record(
-                msg_id=seed_f1, created_at="t", role="user", content=f"种子{seed_f1}",
-            )
-            assert mdm.append_record(block, mdm.F1_PATH)
+            for sid in ([seed_f1] if isinstance(seed_f1, str) else seed_f1):
+                block = mdm.format_message_record(
+                    msg_id=sid, created_at="t", role="user", content=f"种子{sid}",
+                )
+                assert mdm.append_record(block, mdm.F1_PATH)
         result = asyncio.run(_tidy_context_impl({"mode": "sleep", "session_id": "t"}, chat_lock_already_held=True))
     ctx["store"] = store
     return result, write_mock, call_mock, store, ctx
 
 
 def _keyed(results, default=NORMAL_JSON):
-    """call_subagent_with_auto_answer mock：按 agent_name 分发结果。"""
+    """call_subagent_with_auto_answer mock：按 agent_name 分发结果（值可为可调用→每次现算）。"""
     call_mock = mock.MagicMock()
 
     def _side(agent_name=None, **kwargs):
-        return results.get(agent_name, default)
+        value = results.get(agent_name, default)
+        return value() if callable(value) else value
 
     call_mock.side_effect = _side
     return call_mock
@@ -163,6 +172,35 @@ def _cursor_writes(write_mock):
     return [call.args[1] for call in write_mock.call_args_list]
 
 
+def _turn_last_msg_ids_of(path):
+    """文件里「每轮自末条向前第一条非空 msg_id」——轮边界取生产 mdm.all_turn_ends，id 取 mdm._msg_id_of。
+
+    轮规则只在 md_mirror 里有一份，测试不复刻；F3 由 build_f3 从首个 user 记录起写，
+    故 [0, 首个轮末) 窗口内不存在前置残片。
+    """
+    lines = open(path, encoding="utf-8").read().split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    recs = mdm._records(lines)
+    ends = mdm.all_turn_ends(lines)
+    out = []
+    for lo, end in zip([0] + ends, ends):
+        ids = [mdm._msg_id_of(meta) for start, meta in recs if lo <= start < end]
+        ids = [mid for mid in ids if mid]
+        if ids:
+            out.append(ids[-1])
+    return out
+
+
+def _dream_report(which=-1):
+    """dream mock 工厂：上报当前 F3 里真实存在的完整轮末 msg_id（which=-1 即末轮）。"""
+    def _report():
+        ids = _turn_last_msg_ids_of(mdm.F3_PATH)
+        assert ids, f"F3 无完整轮末，种子不成立: {mdm.F3_PATH}"
+        return NORMAL_JSON + f"\n处理完成 @end\nprocessed_msg_id={ids[which]}"
+    return _report
+
+
 # ---------------------------------------------------------------------------
 # 1. 全序钉：entity 先于 dream（cm 已退役零调用）
 # ---------------------------------------------------------------------------
@@ -171,10 +209,10 @@ def test_t6_order_entity_then_dream_no_cm():
     """T6：journal(≥50% 此处 skipped) → entity-extractor → dream-evolver；cm 已退役零调用。"""
     call_mock = _keyed({
         "entity-extractor": NORMAL_JSON + PROCESSED_LINE_ALL,
-        "dream-evolver": NORMAL_JSON + PROCESSED_LINE_ALL,
+        "dream-evolver": _dream_report(),
     })
     result, write_mock, call_mock, _store, _ctx = _run_sleep(
-        call_mock, msg_ids=("m1", "m2"), seed_f1="m2",
+        call_mock, msg_ids=("m1", "m2"), seed_f1=("m1", "m2"),
     )
 
     assert result.get("status") == "ok", f"睡眠全程不应打断: {result}"
@@ -232,10 +270,10 @@ def test_gating_gone_stale_cursor_and_full_f1_proceed():
     _write_home_cursor(home, "last_dream_evolve.json", {"last_dream_evolve_id": "ghost-stale-id"})
     call_mock = _keyed({
         "entity-extractor": NORMAL_JSON + PROCESSED_LINE_ALL,
-        "dream-evolver": NORMAL_JSON + PROCESSED_LINE_ALL,
+        "dream-evolver": _dream_report(),
     })
     result, _w, call_mock, _store, _ctx = _run_sleep(
-        call_mock, msg_ids=("m1", "m2"), home=home, seed_f1="m1",
+        call_mock, msg_ids=("m1", "m2"), home=home, seed_f1=("m1", "m2"),
     )
 
     assert result.get("status") == "ok", f"门控已摘除不得 skipped: {result}"
@@ -251,10 +289,10 @@ def test_dream_cursor_no_longer_written_after_retirement():
     """工程五七件套退役：dream 循环只删 F2 前缀，零 last_dream_evolve 写入。"""
     call_mock = _keyed({
         "entity-extractor": NORMAL_JSON + PROCESSED_LINE_ALL,
-        "dream-evolver": NORMAL_JSON + PROCESSED_LINE_ALL,
+        "dream-evolver": _dream_report(),
     })
     result, write_mock, _c, _store, _ctx = _run_sleep(
-        call_mock, msg_ids=("m1", "m2"), seed_f1="m2",
+        call_mock, msg_ids=("m1", "m2"), seed_f1=("m1", "m2"),
     )
 
     assert result.get("status") == "ok"
@@ -269,7 +307,7 @@ def test_dream_cursor_no_longer_written_after_retirement():
 def test_entry_no_dream_cursor_read(tmp_path):
     """工程五七件套退役反向钉：入口不再读取 last_dream_evolve.json（残留文件在盘也不读）。"""
     home = tmp_path / ".niu"
-    home.mkdir(parents=True)
+    home.mkdir(parents=True, exist_ok=True)
     (home / "last_dream_evolve.json").write_text(
         json.dumps({"last_dream_evolve_id": "m2"}), encoding="utf-8")
 
@@ -282,10 +320,10 @@ def test_entry_no_dream_cursor_read(tmp_path):
 
     call_mock = _keyed({
         "entity-extractor": NORMAL_JSON + PROCESSED_LINE_ALL,
-        "dream-evolver": NORMAL_JSON + PROCESSED_LINE_ALL,
+        "dream-evolver": _dream_report(),
     })
     result, _w, _c, _store, _ctx = _run_sleep(
-        call_mock, msg_ids=("m1", "m2"), home=tmp_path, seed_f1="m2",
+        call_mock, msg_ids=("m1", "m2"), home=tmp_path, seed_f1=("m1", "m2"),
         extra_patches=(mock.patch("pathlib.Path.read_text", _spy_read_text),),
     )
     assert not any("last_dream_evolve.json" in str(p) for p in recorded), \

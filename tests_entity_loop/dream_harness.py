@@ -10,10 +10,11 @@ dream_harness.py — dream-evolver「查重空转死循环」验证 harness（TD
 
 与 entity harness 差异：
   - agent 配置 = config/agents/dream-evolver.md（frontmatter mcpToolFilter 14 工具）
-  - 输入 = ~/.niu/md/F3_dream_workset.md 精选样本（今日真实工作集，81 行）
+  - 输入 = 真实 F3 前 3 条**完整**记录整条搬进 tmp 样本，task 直指该样本文件
   - 非 lightrag 工具 stub：edit/write/read/bash（bash 只读命令放行，写操作拒绝）
-  - 绿判定：有限轮结束（有 @end/covered_all/纯文本收尾）+ 图谱写操作 ≥1
+  - 绿判定：有限轮结束（有 @end/纯文本收尾）+ 图谱写操作 ≥1
     （dream 精加工必须产出 insert/edit/relation，否则是空转）
+    + 上报的 processed_msg_id ∈ 样本 msg_id 集合（完成标记必须是真输入里的 msg_id）
   - 隔离铁律同 entity：NIU_STORAGE_DIR 指向临时图谱副本，生产图谱仅复制源
 
 用法:
@@ -37,7 +38,7 @@ REPO = Path(__file__).resolve().parents[1]
 PROMPT_MD = REPO / "config" / "agents" / "dream-evolver.md"
 PROD_STORAGE = Path.home() / ".niu" / "lightrag_storage"
 F3_SOURCE = Path.home() / ".niu" / "md" / "F3_dream_workset.md"
-WORKDIR_F3 = str(F3_SOURCE)  # task 消息里给模型的路径
+F3_RECORD_LIMIT = 3  # 样本取前几条完整记录（足够触发精加工）
 
 
 def log(msg: str) -> None:
@@ -212,20 +213,35 @@ def summarize_tc(tc) -> str:
     return f"{tc.function.name}({s})"
 
 
-def build_f3_sample(tmp: Path) -> tuple[Path, int]:
-    """F3 工作集精选样本——取今日真实 F3 前若干条含实体/纠错信号的记录。"""
-    lines = F3_SOURCE.read_text(encoding="utf-8", errors="replace").splitlines()
-    # 保留完整记录（到下一个 {"msg_id" 前），最多 40 行
-    keep, count = [], 0
-    for ln in lines:
-        keep.append(ln)
-        if ln.startswith('{"msg_id"'):
-            count += 1
-            if count >= 3:  # 3 条完整会话足够触发精加工
-                break
+def split_records(lines: list[str]) -> list[list[str]]:
+    """按 meta 行切记录块（整条搬运用；绝不切半记录）。"""
+    starts = [i for i, ln in enumerate(lines) if ln.startswith('{"msg_id"')]
+    ends = starts[1:] + [len(lines)]
+    return [lines[s:e] for s, e in zip(starts, ends)]
+
+
+def msg_ids_of(text: str) -> list[str]:
+    """样本全文 → msg_id 列表（本次输入的 msg_id 全集，绿判定按此核对上报值）。"""
+    return re.findall(r'"msg_id":\s*"([^"]+)"', text)
+
+
+def build_f3_sample(tmp: Path) -> tuple[Path, list[str]]:
+    """F3 工作集精选样本——真实 F3 前 F3_RECORD_LIMIT 条**完整**记录（未截断全文）。
+
+    返回 (样本路径, 样本 msg_id 集合)：样本必须整条完整（绝不切半记录），绿判定
+    才能用这个集合核对模型上报的 processed_msg_id 是否真属于本次输入。
+    """
+    lines = F3_SOURCE.read_text(encoding="utf-8", errors="replace").split("\n")
+    keep: list[str] = []
+    for n, block in enumerate(split_records(lines), 1):
+        keep.extend(block)
+        if n >= F3_RECORD_LIMIT:
+            break
+    while keep and keep[-1] == "":
+        keep.pop()
     path = tmp / "F3_dream_workset.md"
     path.write_text("\n".join(keep) + "\n", encoding="utf-8")
-    return path, len(keep)
+    return path, msg_ids_of(path.read_text(encoding="utf-8"))
 
 
 def worker(tmp_str: str, max_turns: int) -> None:
@@ -242,9 +258,15 @@ def worker(tmp_str: str, max_turns: int) -> None:
 
     body, temp, whitelist = load_prompt()
     cfg = load_llm_config()
-    f3_path, f3_lines = build_f3_sample(tmp)
+    f3_path, input_ids = build_f3_sample(tmp)
     tools = build_tools(whitelist, lts)
-    task = f"本次待精加工的对话记录在文件 `{WORKDIR_F3}` 中，请按你的工作流程读取并处理，完成后输出 @end。"
+    task = (
+        f"本次待精加工的对话记录在文件 `{f3_path}` 中。请按你的输入规范用 read 工具分段读取"
+        "并完成知识图谱精加工，完成后输出 @end 和 "
+        "processed_msg_id=<按提示词规范：你已处理到的最后一条完整轮的末条 msg_id；"
+        "末条为空则同一轮内前一条非空>。"
+    )
+    log(f"样本: {f3_path}（{len(input_ids)} 条完整记录 msg_id={input_ids}）")
     messages = [
         {"role": "system", "content": body},
         {"role": "user", "content": task},
@@ -254,6 +276,7 @@ def worker(tmp_str: str, max_turns: int) -> None:
     write_ops = 0
     ended = False
     final_text = ""
+    reported_msg_id = ""
     for turn in range(1, max_turns + 1):
         try:
             params = build_request_params(cfg, messages, tools, temp)
@@ -267,6 +290,10 @@ def worker(tmp_str: str, max_turns: int) -> None:
             text = (msg.content or "").strip()
             final_text = text[:500]
             log(f"[turn {turn}] TEXT: {text[:300]}")
+            m = re.search(
+                r"processed_msg_id\s*[=:\s]\s*['\"]?([0-9A-Za-z_-]+)['\"]?", text)
+            if m:
+                reported_msg_id = m.group(1)
             if "@end" in text:
                 ended = True
             break
@@ -302,6 +329,9 @@ def worker(tmp_str: str, max_turns: int) -> None:
         "write_ops": write_ops,
         "ended_with_end": ended,
         "final_text": final_text,
+        "reported_msg_id": reported_msg_id,
+        "input_msg_ids": input_ids,
+        "reported_in_input": bool(reported_msg_id) and reported_msg_id in input_ids,
     }
     log("=== 结果 ===")
     log(json.dumps(out, ensure_ascii=False, indent=2))
@@ -311,7 +341,8 @@ def worker(tmp_str: str, max_turns: int) -> None:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--expect-end", action="store_true", help="绿判定：有限轮 + 有写操作")
+    ap.add_argument("--expect-end", action="store_true",
+                    help="绿判定：有限轮 + 有写操作 + processed_msg_id ∈ 输入")
     ap.add_argument("--max-turns", type=int, default=25)
     args = ap.parse_args()
 
@@ -328,9 +359,12 @@ def main() -> int:
     res = json.loads((tmp / "result.json").read_text(encoding="utf-8"))
     log(f"总耗时 {elapsed:.1f}s")
     if args.expect_end:
-        ok = res["ended_with_end"] and res["turns"] <= args.max_turns - 1 and res["write_ops"] >= 1
+        ok = (res["ended_with_end"] and res["turns"] <= args.max_turns - 1
+              and res["write_ops"] >= 1 and res["reported_in_input"])
         verdict = "GREEN" if ok else "RED"
-        log(f"VERDICT: {verdict} — turns={res['turns']}, write_ops={res['write_ops']}, ended={res['ended_with_end']}")
+        log(f"VERDICT: {verdict} — turns={res['turns']}, write_ops={res['write_ops']}, "
+            f"ended={res['ended_with_end']}, processed_msg_id={res['reported_msg_id']!r} "
+            f"∈ 输入 {len(res['input_msg_ids'])} 条={res['reported_in_input']}")
         return 0 if ok else 1
     return 0
 

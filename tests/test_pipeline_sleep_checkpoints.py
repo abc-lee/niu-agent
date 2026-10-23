@@ -36,8 +36,17 @@ NORMAL_JSON = json.dumps({"ok": True})  # 非 overflow / 非 incomplete / 非 fa
 
 
 class _FakeCalc:
+    """计数缝：主 Agent 口径 count_message_single；build 口径 count_text（逐记录原文）。"""
+
     def count_message_single(self, role, content, tool_calls=None):
         return 100
+
+    def count_text(self, text):
+        return 100
+
+
+#: F1 种子里的 DB 外尾段 id：严格 relay（strict_turn_ends）不剪末轮 → 它常驻 F1 尾段
+TAIL_ID = "t5-tail-not-in-db"
 
 
 class _FakeRunner:
@@ -74,6 +83,7 @@ def _cp_patches(sleep_side_effect, call_mock):
     """
     return [
         mock.patch("agent.token_calculator.TokenCalculator.get", return_value=_FakeCalc()),
+        mock.patch("agent.context_assembler.calibration.get_ratio", return_value=1.0),
         mock.patch("niu_api.compat._read_context_window_tokens", return_value=8000),
         mock.patch("niu_api.chat.get_or_create_runner", return_value=_FakeRunner()),
         mock.patch("agent.subagent.call_subagent_with_auto_answer", call_mock),
@@ -93,10 +103,10 @@ def _cp_patches(sleep_side_effect, call_mock):
 def _run_sleep_tidy(sleep_side_effect, call_mock=None):
     """直接调 _tidy_context_impl sleep 分支（绕过 worker/CP0），驱动 CP1-CP3。
 
-    v2 适配：向隔离 F1（conftest 已把 mdm.F1_PATH 指向 tmp）写入一条种子记录，
+    v2 适配：向隔离 F1（conftest 已把 mdm.F1_PATH 指向 tmp）写入两条种子记录，
     使 entity 步真实执行（F1 空 → 生产代码跳过提炼）；F2 patch 到本次测试专用
     tmp 文件——relay 剪切目标只允许落测试文件。entity 默认返回带
-    processed_line=999999（snap 到末记录边界 → 全量剪切进 F2），模拟提炼成功。
+    processed_line=999999（吸附到末个严格轮末 → 前缀剪切进 F2，末轮留 F1 尾段）。
 
     门控已随工程四重排摘除（决策 2），无 cursor_value 参。
     返回 (result, write_mock, call_mock, relay)，relay = {"f1":..., "f2":...} 供断言剪切语义。
@@ -112,15 +122,7 @@ def _run_sleep_tidy(sleep_side_effect, call_mock=None):
     if call_mock is None:
         call_mock = mock.MagicMock()
 
-        def _keyed(agent_name=None, **kwargs):
-            if agent_name == "entity-extractor":
-                return NORMAL_JSON + "\n处理完成 @end\nprocessed_line=999999"
-            if agent_name == "dream-evolver":
-                # v3 梦境循环：F2 单种子记录 3 行 → 报 processed_line=3 全删
-                return NORMAL_JSON + "\n处理完成 @end\nprocessed_line=3"
-            return NORMAL_JSON
-
-        call_mock.side_effect = _keyed
+        call_mock.side_effect = _keyed_with_dream_report()
     relay = {}
     with ExitStack() as stack:
         stack.enter_context(mock.patch("niu_api.compat.get_message_store", new=mock.AsyncMock(return_value=store)))
@@ -130,10 +132,14 @@ def _run_sleep_tidy(sleep_side_effect, call_mock=None):
         f2_path = _os.path.join(tempfile.mkdtemp(prefix="t5_cp_relay_"), "f2.md")
         stack.enter_context(mock.patch("agent.md_mirror.F2_PATH", f2_path))
         block = mdm.format_message_record(
-            # v3 梦境循环：F2 种子须用 store 真实消息 id——drop 返回的末删 msg_id 经 fresh_ids 校验后才写游标
             msg_id="m2", created_at="t", role="user", content="种子",
         )
         assert mdm.append_record(block, mdm.F1_PATH)
+        # 严格 relay 不剪末轮：再种一条 DB 外 id 做 F1 尾段，前缀（m2）才剪得动
+        block_tail = mdm.format_message_record(
+            msg_id=TAIL_ID, created_at="t", role="user", content="种子尾段",
+        )
+        assert mdm.append_record(block_tail, mdm.F1_PATH)
         relay["f1"], relay["f2"] = mdm.F1_PATH, f2_path
         result = asyncio.run(_tidy_context_impl({"mode": "sleep", "session_id": "t"}, chat_lock_already_held=True))
     return result, write_mock, call_mock, relay
@@ -145,6 +151,44 @@ def _called_agents(call_mock):
 
 def _cursor_writes(write_mock):
     return [call.args[1] for call in write_mock.call_args_list]
+
+
+def _turn_last_msg_ids_of(path):
+    """文件里「每轮自末条向前第一条非空 msg_id」——轮边界取生产 mdm.all_turn_ends，id 取 mdm._msg_id_of。
+
+    轮规则只在 md_mirror 里有一份，测试不复刻；F3 由 build_f3 从首个 user 记录起写，
+    故 [0, 首个轮末) 窗口内不存在前置残片。
+    """
+    import agent.md_mirror as mdm
+
+    lines = open(path, encoding="utf-8").read().split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    recs = mdm._records(lines)
+    ends = mdm.all_turn_ends(lines)
+    out = []
+    for lo, end in zip([0] + ends, ends, strict=False):
+        ids = [mdm._msg_id_of(meta) for start, meta in recs if lo <= start < end]
+        ids = [mid for mid in ids if mid]
+        if ids:
+            out.append(ids[-1])
+    return out
+
+
+def _keyed_with_dream_report():
+    """默认子 Agent mock：entity 报 processed_line，dream 报当前 F3 里真实存在的末轮末条 msg_id。"""
+    import agent.md_mirror as mdm
+
+    def _keyed(agent_name=None, **kwargs):
+        if agent_name == "entity-extractor":
+            return NORMAL_JSON + "\n处理完成 @end\nprocessed_line=999999"
+        if agent_name == "dream-evolver":
+            ids = _turn_last_msg_ids_of(mdm.F3_PATH)
+            assert ids, f"F3 无完整轮末，种子不成立: {mdm.F3_PATH}"
+            return NORMAL_JSON + f"\n处理完成 @end\nprocessed_msg_id={ids[-1]}"
+        return NORMAL_JSON
+
+    return _keyed
 
 
 def test_cp1_interrupt_after_entity():
@@ -163,7 +207,9 @@ def test_cp1_interrupt_after_entity():
     assert [d for d in writes if d.get("last_dream_evolve_id")] == []
     assert [d for d in writes if d.get("last_compress_id")] == [], "compress 游标已退役，零写"
     with open(relay["f1"], encoding="utf-8") as f:
-        assert f.read() == "", "entity 已执行，F1 应已被剪切"
+        f1_text = f.read()
+    assert f'"msg_id": "{TAIL_ID}"' in f1_text, "entity 已执行：F1 只剩未处理的末轮尾段"
+    assert '"msg_id": "m2"' not in f1_text, "已提炼前缀应剪出 F1"
     with open(relay["f2"], encoding="utf-8") as f:
         assert '"msg_id": "m2"' in f.read(), "剪下前缀应已追加到 F2"
     assert calls["n"] == 1
@@ -218,7 +264,9 @@ def test_sleep_full_run_not_interrupted_when_asleep():
     assert _called_agents(call_mock) == ["entity-extractor", "dream-evolver"]
     assert [d for d in _cursor_writes(write_mock) if d.get("last_compress_id")] == [], "compress 游标已退役，零写"
     with open(relay["f1"], encoding="utf-8") as f:
-        assert f.read() == "", "完整跑完后 F1 应已被提炼剪切清空"
+        f1_text = f.read()
+    assert f'"msg_id": "{TAIL_ID}"' in f1_text, "完整跑完后 F1 只剩未处理的末轮尾段"
+    assert '"msg_id": "m2"' not in f1_text, "已提炼前缀应剪出 F1"
 
 
 # ---------------------------------------------------------------------------

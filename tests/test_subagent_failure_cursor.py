@@ -69,10 +69,17 @@ class TestIsSubagentFailure:
 NORMAL_JSON = json.dumps({"ok": True})  # 非 overflow / 非 incomplete / 非 failure 的正常返回
 ERROR_BRACKET = "[错误]同名子 Agent 已在运行（注册冲突）"
 SUBAGENT_ERROR_STR = "SUBAGENT_ERROR:provider connection failed"
+#: F1 种子里的 DB 外尾段 id：严格 relay 不剪末轮 → 前缀剪走后它常驻 F1 尾段
+TAIL_ID = "t7-tail-not-in-db"
 
 
 class _FakeCalc:
+    """计数缝：主 Agent 口径 count_message_single；build 口径 count_text（逐记录原文）。"""
+
     def count_message_single(self, role, content, tool_calls=None):
+        return 100
+
+    def count_text(self, text):
         return 100
 
 
@@ -109,6 +116,7 @@ def _tidy_failure_patches(subagent_result, call_mock):
     """
     return [
         mock.patch("agent.token_calculator.TokenCalculator.get", return_value=_FakeCalc()),
+        mock.patch("agent.context_assembler.calibration.get_ratio", return_value=1.0),
         mock.patch("niu_api.compat._read_context_window_tokens", return_value=8000),
         mock.patch("niu_api.chat.get_or_create_runner", return_value=_FakeRunner()),
         mock.patch("agent.subagent.call_subagent_with_auto_answer", call_mock),
@@ -162,6 +170,11 @@ class TestTidySleepFailureCursor:
                 msg_id="t7-seed-not-in-db", created_at="t", role="user", content="种子",
             )
             assert mdm.append_record(block, mdm.F1_PATH)
+            # 严格 relay（strict_turn_ends）不剪末轮：再种一条做尾段，前缀才剪得动
+            block_tail = mdm.format_message_record(
+                msg_id=TAIL_ID, created_at="t", role="user", content="种子尾段",
+            )
+            assert mdm.append_record(block_tail, mdm.F1_PATH)
             result = asyncio.run(_tidy_context_impl({"mode": "sleep", "session_id": "t"}, chat_lock_already_held=True))
         return result, write_mock, call_mock, mdm.F1_PATH, f2_path
 
@@ -209,6 +222,8 @@ class TestTidySleepFailureCursor:
         ]
         assert compress_writes == [], "compress 游标已退役，零写"
         with open(f1, encoding="utf-8") as f:
-            assert f.read() == "", "成功提炼后 F1 应被剪切清空"
+            f1_text = f.read()
+        assert f'"msg_id": "{TAIL_ID}"' in f1_text, "成功提炼后 F1 只剩未处理的末轮尾段"
+        assert '"msg_id": "t7-seed-not-in-db"' not in f1_text, "已提炼前缀应剪出 F1"
         with open(f2, encoding="utf-8") as f:
             assert '"msg_id": "t7-seed-not-in-db"' in f.read(), "剪下前缀应追加到 F2"
