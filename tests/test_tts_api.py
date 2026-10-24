@@ -37,9 +37,9 @@ def _client():
     return TestClient(app)
 
 
-def _binary_name():
-    """落盘产物名（默认解析名始终是无后缀 `qwen_tts`；Windows 上由 .exe 回落兜住）。"""
-    return "qwen_tts.exe" if sys.platform == "win32" else "qwen_tts"
+def _binary_name(stem="qwen_tts"):
+    """落盘产物名：平台决定名字，Windows 带 `.exe`，其余平台无后缀（不做磁盘探测）。"""
+    return f"{stem}.exe" if sys.platform == "win32" else stem
 
 
 def _make_installed(tmp_path):
@@ -148,8 +148,8 @@ def test_default_paths_under_home(tmp_path, monkeypatch):
     _home(tmp_path, monkeypatch)
     q = tts_api.read_tts_config()["qwen"]
     assert tts_api.resolve_model_dir(q) == tmp_path / ".niu" / "models" / "qwen3-tts" / "0.6b-customvoice"
-    # 默认名全平台 `qwen_tts`（未落盘时不加后缀，由 _resolve_existing 反向回落）
-    assert tts_api.resolve_binary(q) == tmp_path / ".niu" / "bin" / "qwen_tts"
+    # 默认名由平台决定：Windows `qwen_tts.exe`，其余 `qwen_tts`
+    assert tts_api.resolve_binary(q) == tmp_path / ".niu" / "bin" / _binary_name()
 
 
 def test_explicit_paths_win(tmp_path, monkeypatch):
@@ -157,51 +157,41 @@ def test_explicit_paths_win(tmp_path, monkeypatch):
     _write_config(tmp_path, {"qwen": {"model_dir": str(tmp_path / "elsewhere"), "binary": str(tmp_path / "my_bin")}})
     q = tts_api.read_tts_config()["qwen"]
     assert tts_api.resolve_model_dir(q) == tmp_path / "elsewhere"
-    assert tts_api.resolve_binary(q) == tmp_path / "my_bin"
+    # 显式无后缀写在 Windows 上按规矩补 `.exe`，其余平台原样
+    assert tts_api.resolve_binary(q) == tmp_path / _binary_name("my_bin")
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows 默认布局的产物是 qwen_tts.exe")
-def test_resolve_binary_default_resolves_exe_on_windows(tmp_path, monkeypatch):
-    """默认布局只有 `qwen_tts.exe` 时，解析结果必须是 .exe（手册构建产物）。"""
-    _home(tmp_path, monkeypatch)
-    bindir = tmp_path / ".niu" / "bin"
-    bindir.mkdir(parents=True)
-    (bindir / "qwen_tts.exe").write_text("x", encoding="utf-8")
-    assert tts_api.resolve_binary({"binary": ""}) == bindir / "qwen_tts.exe"
+def test_resolve_binary_default_resolves_exe_on_windows():
+    """Windows 默认名即 `qwen_tts.exe`，不需要磁盘上存在。"""
+    assert tts_api.resolve_binary({"binary": ""}).name == "qwen_tts.exe"
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="非 Windows 无 .exe 后缀")
-def test_resolve_binary_default_resolves_suffixless_off_windows(tmp_path, monkeypatch):
-    """非 Windows 落盘无后缀 `qwen_tts` → 原样解析到它。"""
-    _home(tmp_path, monkeypatch)
-    bindir = tmp_path / ".niu" / "bin"
-    bindir.mkdir(parents=True)
-    (bindir / "qwen_tts").write_text("#!/bin/sh\n", encoding="utf-8")
-    assert tts_api.resolve_binary({"binary": ""}) == bindir / "qwen_tts"
+def test_resolve_binary_default_resolves_suffixless_off_windows():
+    """非 Windows 默认名无后缀 `qwen_tts`，不需要磁盘上存在。"""
+    assert tts_api.resolve_binary({"binary": ""}).name == "qwen_tts"
 
 
-def test_resolve_binary_empty_name_never_raises(tmp_path, monkeypatch):
-    """空文件名路径（`.`/`/`/`C:\\`）不能触发 with_name 的 ValueError（win32 回落分支）。"""
-    _home(tmp_path, monkeypatch)
+def test_resolve_binary_empty_name_never_raises():
+    """空文件名路径（`.`/`/`/`C:\\`/`C:`）不能触发 with_name 的 ValueError，且不被加后缀。"""
     for raw in (".", "/", "C:\\", "C:"):
         got = tts_api.resolve_binary({"binary": raw})
         assert isinstance(got, Path)
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason=".exe 回落仅 Windows")
-def test_resolve_binary_explicit_suffixless_falls_back_to_exe(tmp_path, monkeypatch):
-    """显式配置无后缀路径、磁盘上只有同名 .exe → 解析到 .exe（手册构建产物）。"""
-    _home(tmp_path, monkeypatch)
-    target = tmp_path / "bin" / "qwen_tts"
-    target.parent.mkdir(parents=True)
-    (target.parent / "qwen_tts.exe").write_text("x", encoding="utf-8")
-    assert tts_api.resolve_binary({"binary": str(target)}) == target.with_name("qwen_tts.exe")
+@pytest.mark.skipif(sys.platform != "win32", reason=".exe 后缀仅 Windows")
+def test_resolve_binary_explicit_suffixless_gets_exe():
+    """显式配置无后缀路径 → 补 `.exe`（纯名字变换，不看磁盘上有什么）。"""
+    got = tts_api.resolve_binary({"binary": "/x/qwen_tts"})
+    assert got.name == "qwen_tts.exe"
+    assert got.parent.name == "x"
 
 
 def test_help_probe_passes_no_window_creationflags(tmp_path, monkeypatch):
     """--help 探测在 Windows 必须带 CREATE_NO_WINDOW（打包态后端无可见控制台）。"""
     _home(tmp_path, monkeypatch)
-    binary = tmp_path / "qwen_tts_probe"
+    binary = tmp_path / _binary_name("qwen_tts_probe")
     binary.write_text("#!/bin/sh\n", encoding="utf-8")
     binary.chmod(0o755)  # POSIX 上让 _binary_executable 通过；Windows 忽略
     seen = {}

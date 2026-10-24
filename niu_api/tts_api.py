@@ -2,7 +2,7 @@
 
 架构：Chat 前端 POST /api/tts/speak → 本模块代理 → 纯 C sidecar `qwen_tts --serve <port>`。
 单 Python 环境：只用标准库 + httpx，绝不 import torch/transformers/numpy；
-模型与二进制是用户家目录可选安装（缺省 ~/.niu/models/qwen3-tts/<model>、~/.niu/bin/qwen_tts），
+模型与二进制是用户家目录可选安装（缺省 ~/.niu/models/qwen3-tts/<model>、~/.niu/bin/qwen_tts；Windows 为 qwen_tts.exe），
 永不进项目目录/安装包；未安装时 options 只报状态，不崩、不自动下载。
 
 安全注记（PM 2026-10-21 实测真实引擎）：`--serve` **只收端口**（不收 host:port），且引擎
@@ -139,24 +139,17 @@ def resolve_model_dir(qwen: dict) -> Path:
     return Path.home() / ".niu" / "models" / "qwen3-tts" / str(qwen.get("model") or DEFAULT_QWEN["model"])
 
 
-def _resolve_existing(p: Path) -> Path:
-    """Windows 习惯省略 `.exe`：无后缀且原路径不存在时回落同名 `.exe`（手册构建产物）。"""
-    if p.is_file():
-        return p
-    if sys.platform == "win32" and p.name and not p.suffix:
-        cand = p.with_name(p.name + ".exe")
-        if cand.is_file():
-            return cand
-    return p
-
-
 def resolve_binary(qwen: dict) -> Path:
+    """解析引擎二进制路径。Windows 只认 `.exe`（无后缀写法一律补 `.exe`）；
+    非 Windows 用无后缀。不做磁盘探测/回落。"""
     b = str(qwen.get("binary") or "").strip()
     if b:
-        return _resolve_existing(Path(b).expanduser())
-    # 全平台同名 `qwen_tts`；Windows 上磁盘只有 `qwen_tts.exe` 时由 _resolve_existing 正向回落，
-    # 因此两种落盘布局（带/不带 .exe）都能解析到。
-    return _resolve_existing(Path.home() / ".niu" / "bin" / "qwen_tts")
+        p = Path(b).expanduser()
+        if sys.platform == "win32" and p.name and not p.suffix:
+            p = p.with_name(p.name + ".exe")
+        return p
+    name = "qwen_tts.exe" if sys.platform == "win32" else "qwen_tts"
+    return Path.home() / ".niu" / "bin" / name
 
 
 def quant_args(quantization) -> list[str]:
