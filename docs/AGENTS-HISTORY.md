@@ -14,8 +14,9 @@
 
 - **病灶**：子 Agent 的 `Current Time` 写在 system 里、每轮由 `_refresh_current_time` 原地重写 `messages[0]`；首个不同点 ≈12,048 token，服务端按块复用 KV cache（实测 4K 块规则：`cached = max(0,(floor(P/4096)−1)×4096)`，P 为首个不同 token）→ 每轮 `cached_tokens=0`，dream 28 轮全量重预填充；主 Agent 因动态块在倒数第二条附近，命中 121,104（92–96%）。
 - **改法**：system 只保留 `Current Date: YYYY-MM-DD`（派发时写一次，会话内恒定）+ 一句「`[HH:MM:SS]` 是元信息」；时分秒由 `agent_runner_loop(tool_timestamp=True)` 追加到每条新工具输出末尾（子 Agent 独有，主 Agent 不传）；删除每轮回调与 `_run_agent_loop` 的 `on_before_llm` 死参；续跑两路径（JSON 档深拷贝 / 挂起快照）开跑前把日期改写为今天；带 `cache_control` 的块永不改写。
-- **提示词**：`dream-evolver` 的 `last_tested` 取 system 末行 `Current Date`；`journal-agent`/`journal-daily-agent` 的覆盖水位改为「末批末条 `created_at` 截断到秒再减 1 秒」（`after_time` 为秒级严格大于，减 1 秒防同秒漏读；重复由内容级去重兜底）——**此为对既有「整理完成时刻」拍板的偏离，数据安全优先，待用户复核**。
-- **验证**：目标回归 14 个文件 **252 passed**；邻接 10 个文件 81 passed / 4 skipped；真机 `cached_tokens` 待用户重启 Niu 后跑一次睡眠核对（预期未裁剪轮次 ≥ 上一轮 90%）。
+- **提示词**：`dream-evolver` 的 `last_tested` 改取 system 末行 `Current Date`；`journal-agent`/`journal-daily-agent` 的覆盖水位改为「本批最后一条消息的 `created_at`，截断到秒后再减 1 秒」（`after_time` 是严格大于过滤，减 1 秒可避免跳过同一秒内到达的消息；重复读到的条目由第 5/6 步内容去重）。
+
+- **验证**：目标回归 14 个文件 **252 passed**；邻接 10 个文件 81 passed / 4 skipped；**真机（2026-10-24 08:2x）**：子 Agent 27 次调用 `cached_tokens` 每次恰为「上一轮 prompt − 5 token」，消息公共前缀恒等于上一轮全长，prompt 合计 549,058 token、实际重算 54,271（**省 90%**）；system 末行为 `Current Date: 2026-10-24`、无 `Current Time`；36/36 条工具消息带 `[HH:MM:SS]`；主 Agent `cached=121104` 未受影响。
 - **顺手修测试债**：`tests/test_journal_daily_scheduler.py` 两处 `list(tmp_path.iterdir()) == []` 自 conftest 全局隔离夹具（d565f3d7）起恒假，改为排除 `isolated*`/`.niu` 夹具产物后再断言（语义不变）。
 
 ### 2026-10-23
@@ -702,7 +703,7 @@
 #### 工程：journal 游标改造——uuid 机器行退役 → 落款时间水位（计划 v1.4 R4+R5 双审门禁 + SDD T1-T4）
 
 - **设计（用户拍板）**：旧「覆盖至」+uuid 机器行整链退役 → 整理条目末尾落款「覆盖至 YYYY-MM-DD HH:MM:SS」（空格分隔、「覆盖至」后无冒号，=本批最后消息 created_at 的 T 替换空格截断秒）即水位；下次整理读最近落款自判起点——程序零游标状态机，交互/夜间双 Agent 共享 journal.md 水位天然一致
-- **偏离说明（2026-10-24，计划 2026-10-23-subagent-prompt-cache Task 4）**：水位口径由「本批最后消息 created_at 的 T 替换空格截断秒」改为「本批末条 `created_at` 截断到秒后再减 1 秒」，同时删除提示词里的「当前整理时间/整理完成时刻」取时口径（system 已不含时分秒，工具输出末尾 `[HH:MM:SS]` 不得用作水位）——原因：`after_time` 严格大于过滤，取完成时刻或不减 1 秒都可能把处理期间到达的消息算作已覆盖，数据安全优先；末条 `created_at` 为空则整轮失败不落款。**该变更偏离本节用户拍板口径，待用户复核**
+- **修改记录（2026-10-24，计划 2026-10-23-subagent-prompt-cache Task 4）**：水位由「本批最后消息 created_at 的 T 替换空格截断秒」改为「本批最后一条消息 `created_at` 截断到秒后再减 1 秒」；同时删掉提示词里的「当前整理时间/整理完成时刻」说法（system 已不含时分秒，工具输出末尾的 `[HH:MM:SS]` 不用作水位）。原因：`after_time` 是严格大于过滤，取完成时刻或不减 1 秒会跳过处理期间到达的消息。末条 `created_at` 为空则整轮失败，不写条目和落款。
 - **T1 session-manager get_messages 新参数 after_time**：created_at 严格大于过滤（ISO 字符串比较=时间序），服务端 replace(' ','T') 分隔符归一后比较；与 after_id 可共存（分页第二页起两者都传）；分页基于过滤后序列（首页取最旧 n 条，防增量静默丢）；TOOL_SCHEMAS/MCPTool/dispatch/函数体四处同步
 - **T2 提示词改写**：journal-agent/journal-daily-agent——无落款=首次整理 limit=200；首页起点为时间不会有 invalid_after_id（删旧因果句「→按首次整理兜底」）；分页中途遇 invalid_after_id（如 /new 并发清库）归类 transient → 本轮放弃不写条目不落款、下轮自然重试；/new 清库免疫（时间是值，新消息总更大）
 - **T3 存量迁移**：journal.md 零 uuid 行，最近落款「覆盖至 2026-09-04 11:00:00」
