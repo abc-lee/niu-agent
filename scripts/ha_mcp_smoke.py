@@ -43,7 +43,7 @@
 
 运行：
 
-    cd /Users/lilei/tools/ai-bot
+    cd <仓库根目录>
     python/bin/python scripts/ha_mcp_smoke.py --url http://127.0.0.1:8127 --token <T>
     # 中文名用例（plan §3.3.4）：同容器再跑一遍并加 --name-prefix "冒烟测试"
     # 期望：TOTAL 26 PASS 26 FAIL 0 SKIP 0，退出码 0
