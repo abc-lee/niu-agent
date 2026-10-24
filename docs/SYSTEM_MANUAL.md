@@ -1210,6 +1210,7 @@ C 引擎按 OS + CPU 架构编译，**不能把本机的 `~/.niu/bin/qwen_tts` �
 - 当前 Niu **不随包分发**这些二进制或模型；没有编译/下载的用户继续用系统语音，主程序不受影响。
 - 想免编译，只能由发布方提供**对应平台**的预编译产物；不能共用一份。
 - 模型下载脚本是 bash；Windows 用 Git Bash/WSL 执行，模型落到 `%USERPROFILE%\.niu\models\qwen3-tts\...`。
+- Windows 二进制默认落盘路径为 `%USERPROFILE%\.niu\bin\qwen_tts.exe`（POSIX 为 `~/.niu/bin/qwen_tts`）；配置里 `binary` 留空即按此解析，Windows 上不带后缀的写法会自动回落到同名 `.exe`。
 
 配置示例（0.6B 用 `int8`；`int4` 只对 1.7B Talker 有意义）：
 

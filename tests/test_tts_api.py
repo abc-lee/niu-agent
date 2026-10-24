@@ -9,6 +9,8 @@ probe=true 动态音色（PM 实测 speakers 形态）、TTS_SYSTEM_ONLY 400、T
 
 import asyncio
 import json
+import sys
+from pathlib import Path
 
 import pytest
 from fastapi import FastAPI
@@ -35,9 +37,14 @@ def _client():
     return TestClient(app)
 
 
+def _binary_name():
+    """落盘产物名（默认解析名始终是无后缀 `qwen_tts`；Windows 上由 .exe 回落兜住）。"""
+    return "qwen_tts.exe" if sys.platform == "win32" else "qwen_tts"
+
+
 def _make_installed(tmp_path):
     """tmp 家目录里造出完整安装布局：可执行 binary + config.json + model.safetensors + speech_tokenizer。"""
-    binary = tmp_path / ".niu" / "bin" / "qwen_tts"
+    binary = tmp_path / ".niu" / "bin" / _binary_name()
     binary.parent.mkdir(parents=True, exist_ok=True)
     binary.write_text("#!/bin/sh\n", encoding="utf-8")
     binary.chmod(0o755)
@@ -73,8 +80,9 @@ class _StubPopen:
 
     instances = []
 
-    def __init__(self, argv, stdout=None, stderr=None):
+    def __init__(self, argv, stdout=None, stderr=None, **kwargs):
         self.argv = list(argv)
+        self.kwargs = kwargs
         self.returncode = None
         _StubPopen.instances.append(self)
 
@@ -140,6 +148,7 @@ def test_default_paths_under_home(tmp_path, monkeypatch):
     _home(tmp_path, monkeypatch)
     q = tts_api.read_tts_config()["qwen"]
     assert tts_api.resolve_model_dir(q) == tmp_path / ".niu" / "models" / "qwen3-tts" / "0.6b-customvoice"
+    # 默认名全平台 `qwen_tts`（未落盘时不加后缀，由 _resolve_existing 反向回落）
     assert tts_api.resolve_binary(q) == tmp_path / ".niu" / "bin" / "qwen_tts"
 
 
@@ -149,6 +158,68 @@ def test_explicit_paths_win(tmp_path, monkeypatch):
     q = tts_api.read_tts_config()["qwen"]
     assert tts_api.resolve_model_dir(q) == tmp_path / "elsewhere"
     assert tts_api.resolve_binary(q) == tmp_path / "my_bin"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows 默认布局的产物是 qwen_tts.exe")
+def test_resolve_binary_default_resolves_exe_on_windows(tmp_path, monkeypatch):
+    """默认布局只有 `qwen_tts.exe` 时，解析结果必须是 .exe（手册构建产物）。"""
+    _home(tmp_path, monkeypatch)
+    bindir = tmp_path / ".niu" / "bin"
+    bindir.mkdir(parents=True)
+    (bindir / "qwen_tts.exe").write_text("x", encoding="utf-8")
+    assert tts_api.resolve_binary({"binary": ""}) == bindir / "qwen_tts.exe"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="非 Windows 无 .exe 后缀")
+def test_resolve_binary_default_resolves_suffixless_off_windows(tmp_path, monkeypatch):
+    """非 Windows 落盘无后缀 `qwen_tts` → 原样解析到它。"""
+    _home(tmp_path, monkeypatch)
+    bindir = tmp_path / ".niu" / "bin"
+    bindir.mkdir(parents=True)
+    (bindir / "qwen_tts").write_text("#!/bin/sh\n", encoding="utf-8")
+    assert tts_api.resolve_binary({"binary": ""}) == bindir / "qwen_tts"
+
+
+def test_resolve_binary_empty_name_never_raises(tmp_path, monkeypatch):
+    """空文件名路径（`.`/`/`/`C:\\`）不能触发 with_name 的 ValueError（win32 回落分支）。"""
+    _home(tmp_path, monkeypatch)
+    for raw in (".", "/", "C:\\", "C:"):
+        got = tts_api.resolve_binary({"binary": raw})
+        assert isinstance(got, Path)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason=".exe 回落仅 Windows")
+def test_resolve_binary_explicit_suffixless_falls_back_to_exe(tmp_path, monkeypatch):
+    """显式配置无后缀路径、磁盘上只有同名 .exe → 解析到 .exe（手册构建产物）。"""
+    _home(tmp_path, monkeypatch)
+    target = tmp_path / "bin" / "qwen_tts"
+    target.parent.mkdir(parents=True)
+    (target.parent / "qwen_tts.exe").write_text("x", encoding="utf-8")
+    assert tts_api.resolve_binary({"binary": str(target)}) == target.with_name("qwen_tts.exe")
+
+
+def test_help_probe_passes_no_window_creationflags(tmp_path, monkeypatch):
+    """--help 探测在 Windows 必须带 CREATE_NO_WINDOW（打包态后端无可见控制台）。"""
+    _home(tmp_path, monkeypatch)
+    binary = tmp_path / "qwen_tts_probe"
+    binary.write_text("#!/bin/sh\n", encoding="utf-8")
+    binary.chmod(0o755)  # POSIX 上让 _binary_executable 通过；Windows 忽略
+    seen = {}
+
+    class _Help:
+        stdout = b"usage: ... --int8"
+        stderr = b""
+
+    def fake_run(*args, **kwargs):
+        seen.update(kwargs)
+        return _Help()
+
+    monkeypatch.setattr(tts_api.subprocess, "run", fake_run)
+    assert tts_api.detect_quantizations({"binary": str(binary)}) == ["bf16", "int8"]
+    if sys.platform == "win32":
+        assert seen["creationflags"] == 0x08000000
+    else:
+        assert "creationflags" not in seen
 
 
 def test_quant_args_mapping():
@@ -171,7 +242,11 @@ def test_installed_false_when_pieces_missing(tmp_path, monkeypatch):
     (mdir / "speech_tokenizer" / "model.safetensors").unlink()
     assert tts_api.is_installed(q) is False  # speech_tokenizer 缺 → 不完整
     (mdir / "speech_tokenizer" / "model.safetensors").write_text("s", encoding="utf-8")
-    binary.chmod(0o644)
+    if sys.platform == "win32":
+        # Windows 的 os.access(X_OK) 对存在文件恒真（只认存在性）→ 删文件模拟不可执行。
+        binary.unlink()
+    else:
+        binary.chmod(0o644)
     assert tts_api.is_installed(q) is False  # binary 不可执行 → 未安装
 
 
@@ -359,12 +434,14 @@ def test_manager_start_argv_serves_port_not_hostport(tmp_path, monkeypatch):
     assert m.ensure_running(cfg) == 17987
     argv = _StubPopen.instances[0].argv
     assert argv == [
-        str(tmp_path / ".niu" / "bin" / "qwen_tts"),
+        str(tmp_path / ".niu" / "bin" / _binary_name()),
         "-d", str(tmp_path / ".niu" / "models" / "qwen3-tts" / "0.6b-customvoice"),
         "--int8",
         "--serve", "17987",
     ]
     assert ":" not in argv[-1]  # `--serve` 只收端口，不是 host:port
+    if sys.platform == "win32":
+        assert _StubPopen.instances[0].kwargs["creationflags"] == 0x08000000  # 打包态不弹黑窗
     m.stop()
 
 

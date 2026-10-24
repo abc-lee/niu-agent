@@ -16,6 +16,7 @@ import json
 import math
 import os
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -50,6 +51,14 @@ DEFAULT_QWEN = {
     "idle_stop_minutes": 10,
     "fallback": "system",
 }
+
+
+def _popen_flags() -> dict:
+    """平台相关 Popen/run 参数：Windows 隐藏控制台窗口（打包态后端无可见控制台，
+    否则侧车/--help 子进程会新建控制台宿主）。"""
+    if sys.platform == "win32":
+        return {"creationflags": 0x08000000}  # CREATE_NO_WINDOW
+    return {}
 
 
 class TtsUnavailable(Exception):
@@ -130,11 +139,24 @@ def resolve_model_dir(qwen: dict) -> Path:
     return Path.home() / ".niu" / "models" / "qwen3-tts" / str(qwen.get("model") or DEFAULT_QWEN["model"])
 
 
+def _resolve_existing(p: Path) -> Path:
+    """Windows 习惯省略 `.exe`：无后缀且原路径不存在时回落同名 `.exe`（手册构建产物）。"""
+    if p.is_file():
+        return p
+    if sys.platform == "win32" and p.name and not p.suffix:
+        cand = p.with_name(p.name + ".exe")
+        if cand.is_file():
+            return cand
+    return p
+
+
 def resolve_binary(qwen: dict) -> Path:
     b = str(qwen.get("binary") or "").strip()
     if b:
-        return Path(b).expanduser()
-    return Path.home() / ".niu" / "bin" / "qwen_tts"
+        return _resolve_existing(Path(b).expanduser())
+    # 全平台同名 `qwen_tts`；Windows 上磁盘只有 `qwen_tts.exe` 时由 _resolve_existing 正向回落，
+    # 因此两种落盘布局（带/不带 .exe）都能解析到。
+    return _resolve_existing(Path.home() / ".niu" / "bin" / "qwen_tts")
 
 
 def quant_args(quantization) -> list[str]:
@@ -224,7 +246,9 @@ def detect_quantizations(qwen: dict) -> list[str]:
     if not _binary_executable(binary):
         return []
     try:
-        proc = subprocess.run([str(binary), "--help"], capture_output=True, timeout=HELP_TIMEOUT)
+        proc = subprocess.run(
+            [str(binary), "--help"], capture_output=True, timeout=HELP_TIMEOUT, **_popen_flags()
+        )
         text = ((proc.stdout or b"") + (proc.stderr or b"")).decode("utf-8", errors="replace")
     except (OSError, subprocess.SubprocessError):
         return list(KNOWN_QUANTS)
@@ -302,7 +326,9 @@ class QwenTtsManager:
         argv = [str(binary), "-d", str(model_dir), *quant_args(q.get("quantization")), "--serve", str(port)]
         self._log_file = self._open_log()
         try:
-            self._proc = subprocess.Popen(argv, stdout=self._log_file, stderr=subprocess.STDOUT)
+            self._proc = subprocess.Popen(
+                argv, stdout=self._log_file, stderr=subprocess.STDOUT, **_popen_flags()
+            )
         except OSError as e:
             self._close_log()
             raise TtsUnavailable(f"sidecar 启动失败: {e}") from e
