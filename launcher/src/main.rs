@@ -2927,13 +2927,13 @@ fn main() {
     let integrity_failed_bg = integrity_failed.clone();
 
     // Shared "LLM config failed" flag — set true by the background thread
-    // itself when /api/llm-status reports not-ready, OR the fallback
-    // /api/test-llm (after probe_failed) fails twice. Once true, the bg
-    // thread launches the settings window (instead of the assistant),
-    // waits for either the test to pass or the settings window to be
-    // closed without passing, then sets cancelled=true (used by main
-    // thread to tear down the Python API and exit the process (so user
-    // can restart))
+    // itself when /api/llm-status reports not-ready (the backend's own
+    // startup connectivity probe decided it). Once true, the bg thread
+    // launches the settings window (instead of the assistant), polls
+    // /api/test-llm to confirm the user's save succeeded, and if the
+    // window closes without a passing test sets cancelled=true (used by
+    // main thread to tear down the Python API and exit the process (so
+    // user can restart))
     let llm_config_failed = Arc::new(AtomicBool::new(false));
     let llm_config_failed_bg = llm_config_failed.clone();
 
@@ -3229,78 +3229,38 @@ fn main() {
             info!("Checking LLM configuration...");
 
             #[derive(Debug, Deserialize)]
-            struct LlmStatus { ready: bool, #[serde(default)] probe_failed: bool, #[allow(dead_code)] error: Option<String> }
+            struct LlmStatus { ready: bool, #[serde(default)] probe_failed: bool, #[serde(default)] error: Option<String> }
             #[derive(Debug, Deserialize)]
             struct TestLlmResult { success: bool, message: Option<String>, error: Option<String> }
 
             let llm_status_url = format!("http://127.0.0.1:{}/api/llm-status", port);
-            let (llm_configured, probe_failed) = match check_client.get(&llm_status_url).send() {
+            let (llm_configured, probe_failed, llm_error) = match check_client.get(&llm_status_url).send() {
                 Ok(resp) if resp.status().is_success() => {
                     match resp.json::<LlmStatus>() {
-                        Ok(s) => (s.ready, s.probe_failed),
-                        Err(e) => { warn!("Failed to deserialize llm-status response: {}", e); (false, false) }
+                        Ok(s) => (s.ready, s.probe_failed, s.error),
+                        Err(e) => { warn!("Failed to deserialize llm-status response: {}", e); (false, false, None) }
                     }
                 }
-                _ => (false, false),
+                _ => (false, false, None),
             };
 
-            // 判断是否需要打开 settings 窗口让用户重配 LLM
-            // 三态决策（启动探测去重）：
-            // - ready=true（后端 lifespan 已真实探测通过）→ 直接启动，不再重复 test-llm
-            // - ready=false + probe_failed=true（配置存在但后端探测失败）→ test-llm 兜底
-            //   验证（230s——区分慢模型/瞬态与真不通：通过 proceed / 两次失败配置页）
-            // - ready=false + probe_failed=false（配置缺失）→ 配置页
-            let mut need_settings = false;
-            if !llm_configured && !probe_failed {
-                info!("LLM not configured (llm-status.ready=false), opening settings...");
-                need_settings = true;
-            } else if !llm_configured && probe_failed {
-                info!("LLM configured but backend probe failed, running fallback test...");
-                // 对齐后端 /api/test-llm 端点 wait_for 上限 220s（resolve_probe_budget
-                // 钳制 llm.read_timeout ≤ 190 → wait ≤ 220；逃生口全范围覆盖）——
-                // 25s 会让慢首响推理模型（20-120s）在此超时并落入 proceed-anyway 分支
-                // 或配置页轮询永久超时，与后端 LLM 门控判定分歧（静默降级/配置页卡死）。
-                // 230s 与 settings 前端 socket 超时一致（v2.5：三方统一 230）。
-                let test_client = reqwest::blocking::Client::builder()
-                    .timeout(Duration::from_secs(230)).build().unwrap_or_else(|_| check_client.clone());
-                let test_url = format!("http://127.0.0.1:{}/api/test-llm", port);
-
-                match test_client.post(&test_url)
-                    .header("Content-Type", "application/json").body("{}").send() {
-                    Ok(resp) if resp.status().is_success() => {
-                        if let Ok(v) = resp.json::<TestLlmResult>() {
-                            if !v.success {
-                                warn!("LLM test failed: {}", v.error.unwrap_or_default());
-                                // 重试一次（5 秒后），避免瞬时网络错误误判
-                                thread::sleep(Duration::from_secs(5));
-                                let retry = test_client.post(&test_url)
-                                    .header("Content-Type", "application/json").body("{}").send();
-                                let retry_passed = match retry {
-                                    Ok(resp) if resp.status().is_success() => {
-                                        resp.json::<TestLlmResult>().ok().map_or(false, |v| v.success)
-                                    }
-                                    _ => false
-                                };
-                                if retry_passed {
-                                    info!("LLM test passed on retry (transient error)");
-                                } else {
-                                    // 连续两次失败 → 打开配置页面
-                                    info!("LLM test failed twice, opening settings...");
-                                    need_settings = true;
-                                }
-                            } else {
-                                info!("LLM test passed (fallback verification): {}", v.message.unwrap_or_default());
-                            }
-                        }
-                    }
-                    _ => {
-                        // 端点出错 → 降级继续启动
-                        warn!("LLM test endpoint failed, proceeding anyway");
-                    }
+            // 两态决策（2026-11-02 修复：启动阶段只允许后端这一处探测）：
+            // - ready=true（后端 lifespan 连通性探测通过）→ 直接启动
+            // - 其余（配置缺失 / 后端探测失败）→ 立即开设置页，保存后退出重启
+            // 启动器不得再跑第二套探测：两套判定曾各自写不同状态，导致
+            // 「后端门控关闭、启动器放行」的悬空态（2026-11-01 实测 17 小时定时任务全停）。
+            let need_settings = !llm_configured;
+            if need_settings {
+                if probe_failed {
+                    warn!(
+                        "LLM backend connectivity probe failed ({}), opening settings...",
+                        llm_error.as_deref().unwrap_or("unknown")
+                    );
+                } else {
+                    info!("LLM not configured (llm-status.ready=false), opening settings...");
                 }
             } else {
-                // 后端 lifespan 已真实连通性探测通过——跳过重复验证（单一真相源）
-                info!("LLM ready (verified by backend at startup), skipping launcher test");
+                info!("LLM ready (verified by backend at startup)");
             }
 
             if need_settings {
