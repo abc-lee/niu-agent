@@ -89,7 +89,9 @@ def _minimal_probe_config(config: dict) -> dict:
     return {k: config[k] for k in _MINIMAL_PROBE_KEYS if k in config}
 
 
-_CONNECTIVITY_PASSTHROUGH_KEYS = ("apibase", "apikey", "model", "type", "provider", "proxy")
+# 生产链路 agent/runner.py 的 create_client 不传 proxy（只取 apikey/apibase/model/type
+# 等），探测同样不传：否则 llm.proxy 配坏时会出现「探测失败、生产可用」的判定分歧。
+_CONNECTIVITY_PASSTHROUGH_KEYS = ("apibase", "apikey", "model", "type", "provider")
 
 
 def _connectivity_error_text(exc: Exception) -> str:

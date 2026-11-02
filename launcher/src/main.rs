@@ -2926,17 +2926,6 @@ fn main() {
     let integrity_failed = Arc::new(AtomicBool::new(false));
     let integrity_failed_bg = integrity_failed.clone();
 
-    // Shared "LLM config failed" flag — set true by the background thread
-    // itself when /api/llm-status reports not-ready (the backend's own
-    // startup connectivity probe decided it). Once true, the bg thread
-    // launches the settings window (instead of the assistant), polls
-    // /api/test-llm to confirm the user's save succeeded, and if the
-    // window closes without a passing test sets cancelled=true (used by
-    // main thread to tear down the Python API and exit the process (so
-    // user can restart))
-    let llm_config_failed = Arc::new(AtomicBool::new(false));
-    let llm_config_failed_bg = llm_config_failed.clone();
-
     // Build environment vars for Python API (computed on main thread for simplicity).
     // build_api_env merges the inherited env with Niu-pinned overrides — pins are
     // appended AFTER inheritance so a user-shell PYTHONUTF8/PYTHONIOENCODING can't win.
@@ -3230,8 +3219,6 @@ fn main() {
 
             #[derive(Debug, Deserialize)]
             struct LlmStatus { ready: bool, #[serde(default)] probe_failed: bool, #[serde(default)] error: Option<String> }
-            #[derive(Debug, Deserialize)]
-            struct TestLlmResult { success: bool, message: Option<String>, error: Option<String> }
 
             let llm_status_url = format!("http://127.0.0.1:{}/api/llm-status", port);
             let (llm_configured, probe_failed, llm_error) = match check_client.get(&llm_status_url).send() {
@@ -3264,24 +3251,17 @@ fn main() {
             }
 
             if need_settings {
-                // 设共享标志，让后续 launch_window("assistant") 守卫跳过
-                llm_config_failed_bg.store(true, Ordering::SeqCst);
                 // settings 模式下不关 splash（splash_tx.send(())）—— 测试通过后
                 // splash 需要继续显示 "正在关闭所有进程..." 提示，直到 cleanup
                 // 完成由 phase_tx 通知 splash 退出。这里启动 settings 窗口，
                 // splash 仍留在屏幕底层作为遮罩。
+                // settings 窗口保存成功会自行关窗（ui/main/windows/settings/index.html
+                // 的 saveConfig 成功后 1.5s 调 closeWindow）；启动器只等窗口退出，
+                // 不再轮询 /api/test-llm 另立一套探测判定（两套判定曾各自写不同状态）。
+                // 窗口退出（保存成功自动关窗，或用户直接关窗）后统一走下方退出进程流程。
                 let settings_result = launch_window("settings", port);
                 if let Ok(mut settings_child) = settings_result {
-                    let test_url = format!("http://127.0.0.1:{}/api/test-llm", port);
-                    // 对齐后端 /api/test-llm 端点 wait_for 上限 220s（resolve_probe_budget
-                    // 钳制 llm.read_timeout ≤ 190 → wait ≤ 220；逃生口全范围覆盖）——
-                    // 25s 会让慢首响推理模型（20-120s）在此超时并落入 proceed-anyway 分支
-                    // 或配置页轮询永久超时，与后端 LLM 门控判定分歧（静默降级/配置页卡死）。
-                    // 230s 与 settings 前端 socket 超时一致（v2.5：三方统一 230）。
-                    let poll_client = reqwest::blocking::Client::builder()
-                        .timeout(Duration::from_secs(230))
-                        .build().unwrap_or_else(|_| check_client.clone());
-                    // 轮询：直到 settings 测试通过 OR settings 窗口被关闭
+                    // 轮询：直到 settings 窗口退出
                     // 删除 reopen_count>3 重开死循环——settings 一关就 break
                     loop {
                         // 与主等待循环同权：收到 SIGTERM/SIGINT 也立即 break，
@@ -3297,35 +3277,11 @@ fn main() {
                             break;
                         }
                         thread::sleep(Duration::from_secs(3));
-                        // v2.6.4：sleep 期间窗口可能已关闭——POST test-llm 最长阻塞
-                        // ~220s（后端 wait_for 上限）。若关窗发生在 sleep 期间而只在循环
-                        // 顶部检查，启动器仍会阻塞在慢 POST 上，延迟 notify_shutdown/重启
-                        // 2-3.5 分钟。这里在 sleep 之后、POST 之前再查一次窗口退出，
-                        // 消除确定性退出延迟（残余竞态：POST 在途时关窗，最坏仍 ≤220s）。
-                        // sleep 期间到达的信号在此同样收口。
-                        if cancelled_bg.load(Ordering::SeqCst)
-                            || SIGNAL_RECEIVED.load(Ordering::SeqCst)
-                        {
-                            break;
-                        }
-                        if let Ok(Some(exit_status)) = settings_child.try_wait() {
-                            info!("Settings window closed (exit_status={})", exit_status);
-                            break;
-                        }
-                        if let Ok(resp) = poll_client.post(&test_url)
-                            .header("Content-Type", "application/json").body("{}").send() {
-                            if let Ok(v) = resp.json::<TestLlmResult>() {
-                                if v.success {
-                                    info!("LLM test passed after reconfiguration, exiting for restart");
-                                    break;
-                                }
-                            }
-                        }
                     }
                 } else {
                     error!("Failed to launch settings window: {:?}", settings_result.err());
                 }
-                // 不论测试通过还是窗口被关，都退出整个进程（让用户重启）
+                // 不论保存成功自动关窗还是用户直接关窗，都退出整个进程（让用户重启）
                 // 先通知 splash 切到 closing 状态，显示 "正在关闭所有进程..."
                 // 提示。splash 会保持显示直到 cleanup 完成由 phase_tx 的
                 // CleanupDone 信号触发 iced::exit()。

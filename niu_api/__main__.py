@@ -153,17 +153,18 @@ async def lifespan(app: FastAPI):
     logger.info("Embedding model ready")
 
     # 2.5. LLM 配置门控：检测失败时不启动依赖 LLM 的后台组件
-    #      （scheduler/IM/HAWatcher/db_monitor/脑区 gate/LightRAG 背景同步/
-    #      response_format 后台探测），仅保留 API 供配置页使用；
+    #      （scheduler/IM/HAWatcher/db_monitor/脑区 gate/LightRAG 背景同步），
+    #      仅保留 API 供配置页使用；
     #      启动器弹配置页 → 配置成功 → 退出重启。
     #      与 LightRAG v7 阻塞模式同型：前置条件不可用 → 不启动依赖它的后台工作。
-    #      预算 120s/150s（与 test-llm 端点经 resolve_probe_budget 一致，
-    #      与启动器 230s 对齐）——慢首响推理模型不会被误判降级（v2.2/v2.4/v2.5）。
+    #      预算 120s/150s（resolve_probe_budget 可按 llm.read_timeout 覆盖，上限 190/220）——
+    #      慢首响推理模型不会被误判降级（v2.2/v2.4/v2.5）；230s 是设置页 socket 超时
+    #      （设置页探测链路），与启动探测无关。
     set_preload_stage("正在检测大模型配置")
     from niu_api.internal.lightrag_manager import set_llm_gate_ready
-    # 2.6. response_format 后台探测门控（v2.6 时序收口）：先置 False——慢探测
-    #      （150-210s）窗口内任何 daemon（如 SkillSync 30s 等待后 get_lightrag()）
-    #      触发的 probe 都被跳过（就绪性未确认，跳过正确）；探测结束后再置 llm_ready
+    # 2.6. 门控 flag（v2.6 时序收口）：先置 False——启动连通性探测（最长 150s）窗口内
+    #      任何 daemon（如 SkillSync 30s 等待后 get_lightrag()）触发的 probe 都被跳过
+    #      （就绪性未确认，跳过正确）；探测结束后再按 llm_ready 置位
     set_llm_gate_ready(False)
     from niu_api.llm_ready import check_llm_ready
     llm_ready, llm_ready_reason = await check_llm_ready()

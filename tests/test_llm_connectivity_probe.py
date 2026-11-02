@@ -95,7 +95,9 @@ async def test_request_params_minimal():
     for banned in ("max_tokens", "capabilities", "reasoning_effort", "thinking", "temperature"):
         assert banned not in cfg
     assert cfg["sticky_session_id"] == "probe-test-llm"
-    assert cfg["proxy"] == "http://127.0.0.1:8888"
+    # 生产 create_client 不传 proxy（agent/runner.py），探测同样排除：
+    # llm.proxy 配坏时不能让启动探测单独判失败
+    assert "proxy" not in cfg
     assert cfg["litellm_kwargs"] == {"sticky_session_headers": {"x-session": "abc"}}
     assert cfg["model"] == "test-model"
     assert cfg["api_type"] == "openai"

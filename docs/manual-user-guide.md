@@ -192,13 +192,13 @@ LLM 配置由两个文件组成：
 - GLM 端点（`maas-coding-api.cn-huabei-1.xf-yun.com/v2`，model=`xopglm5`）：网关接受但模型输出漂移，探测结果 `prompt_only`
 - OpenAI 官方：探测结果 `json_schema`
 
-**字段缺失自动探测**：用户配置无 `response_format_mode` 字段时，程序启动后后台自动触发一次探测写入配置，不阻塞启动。
+**字段缺失后的来源**：启动时不再自动探测；设置页「测试连接并保存」链路会对非自定义 LightRAG 配置执行一次 `response_format` 探测并写入 `response_format_mode`（探测失败则阻断保存）。从未打开设置页保存过的旧配置保持缺键 → 运行时按 `prompt_only` 处理。
 
 **手动覆盖**：关闭程序后手动编辑 `~/.niu/config/user-config.json` 的 `lightrag_llm.litellm_kwargs.response_format_mode`。下次设置窗口测试保存会覆盖手动值。
 
 **注意**：
-- 探测调用会消耗约 100-200 token（最坏情况测到 Tier 2）。仅"测试连接并保存"按钮触发，不引入后台定时探测（字段缺失的首次启动自动探测除外）。
-- 探测独立于启动时的 LLM 连通性测试（`/api/test-llm`），不影响启动速度。
+- 探测调用会消耗约 100-200 token（最坏情况测到 Tier 2）。仅"测试连接并保存"按钮触发，启动与后台均不探测。
+- 探测独立于启动时的 LLM 连通性测试（启动探测只发 `hi` 判连通，两套判定互不复用），不影响启动速度。
 
 > **重要**：LightRAG 的 keyword_extraction 依赖 `response_format`，必须使用标准端点。如果误用 Coding Plan 端点，"格式化输出能力自动探测"会识别为 `prompt_only` 档位并写入配置，运行时 LightRAG 直接走 prompt-only 路径（不再每次发无效请求触发 400 后 fallback）。详见上方"格式化输出（response_format）能力自动探测"小节。
 
