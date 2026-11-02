@@ -5,8 +5,8 @@
 - 三处探测一致性断言（_probe_llm / probe-response-format 用 assemble_request_params
   后 reasoning_effort 从配置透传）：**预期红相**——compat.py 改造在 Task 3，
   本 Task 仅验 build_base_params 部分，Task 3 转绿。
-  llm_ready.check_llm_ready 复用 _probe_llm（llm_ready.py L100）→ 被
-  test_probe_llm_passes_reasoning_effort_from_config 传递覆盖。
+  一致性范围 = 设置页端点内部一致；启动连通性探测（llm_ready._probe_connectivity）
+  已独立，刻意不透传能力参数，不在本文件断言范围内。
 """
 
 import asyncio

@@ -41,7 +41,8 @@ from niu_api.internal.region_manager import FLOOR_WEIGHT
 
 # 进程启动默认 True——probe 只在 lifespan 显式 set_llm_gate_ready(False) 时跳过
 # （lifespan 在 check_llm_ready 前后调用；llm_ready 是 lifespan 局部变量，
-#  probe 无参数通道 → 模块级 flag 传递）
+#  flag 是唯一传递通道）。2026-11-02：启动期 response_format 后台探测已移除，
+#  本 flag 的读者只剩 /api/llm-status（设置页据此展示探测结果）
 _llm_gate_ready: bool = True
 
 
@@ -226,162 +227,6 @@ def _strip_response_format_mode(config: dict) -> dict:
         return config  # 无需复制
     new_litellm_kwargs = {k: v for k, v in litellm_kwargs.items() if k != "response_format_mode"}
     return {**config, "litellm_kwargs": new_litellm_kwargs}
-
-
-def _should_auto_probe_after_upgrade(user_config: dict) -> bool:
-    """判断是否需要在启动时自动触发 response_format 探测。
-
-    返回 True 的条件：lightrag_llm.litellm_kwargs 和 llm.litellm_kwargs
-    都无 response_format_mode 键（表示用户从旧版本升级，未探测过）。
-
-    Why: 旧版本用户配置无 response_format_mode 字段。如果不自动探测，
-    GLM 等需要探测的配置会永远走 prompt_only（_resolve_response_format
-    返回 None），与"GLM 支持其他返回格式"事实矛盾。
-
-    同时检查 llm.litellm_kwargs 是因为 lightrag_llm.model 为空时
-    get_llm_config 走 fallback 用 llm 段，response_format_mode 可能
-    写在 llm 段（场景二/三：LightRAG 用主 Agent 同一模型）。
-    """
-    lightrag_llm = user_config.get("lightrag_llm") or {}
-    lightrag_kwargs = lightrag_llm.get("litellm_kwargs") or {}
-    llm = user_config.get("llm") or {}
-    llm_kwargs = llm.get("litellm_kwargs") or {}
-    return "response_format_mode" not in lightrag_kwargs and "response_format_mode" not in llm_kwargs
-
-
-def _trigger_background_probe_if_needed() -> None:
-    """启动后后台探测 response_format 档位（如检测到旧版本配置）。
-
-    在独立 daemon 线程跑，不阻塞启动流程。探测结果写入
-    lightrag_llm.litellm_kwargs.response_format_mode + allowed_openai_params。
-
-    时序说明：本函数在 LightRAG eager init 之后调用，但此时 niu_api lifespan
-    可能还没 yield（FastAPI 在 yield 前不处理 HTTP 请求）。daemon 线程内先
-    sleep 10s 等服务起来，然后最多重试 3 次（每次间隔 10s）。
-
-    已开始执行的 keyword_extraction 调用会继续用旧 session（基于旧 config_key），
-    下次调用 _get_litellm_session 看到 config_key 变化会自动重建 session，
-    读到新配置——无时序问题。
-
-    M2 atomic write：先写临时文件再 os.replace，避免主进程在写入过程中读到
-    部分 JSON 触发 JSONDecodeError。
-    """
-    if not _llm_gate_ready:
-        logger.warning("[ProbeFormat] 后台探测跳过（LLM 不可用）")
-        return
-    import json
-    import threading
-    from pathlib import Path
-
-    from niu_api.llm_proxy import get_llm_config
-
-    def _probe_in_background():
-        try:
-            from niu_api.config import CONFIG_PATH
-            user_config_path = Path(CONFIG_PATH)
-            if not user_config_path.exists():
-                return
-            with open(user_config_path, encoding="utf-8") as f:
-                user_config = json.load(f)
-            if not _should_auto_probe_after_upgrade(user_config):
-                return  # 已探测过
-
-            # 后台触发探测（用当前 lightrag_llm 配置）
-            import httpx
-            config = get_llm_config(use_lightrag_config=True)
-            # 标准化字段名（get_llm_config 返回小写）
-            probe_payload = {
-                "apikey": config.get("apikey", ""),
-                "apibase": config.get("apibase", ""),
-                "model": config.get("model", ""),
-                "type": config.get("type", "openai"),
-                "provider": config.get("provider", ""),
-                "litellm_kwargs": config.get("litellm_kwargs", {}),
-            }
-            # 重试机制：本函数在 LightRAG eager init 后立即调用，此时 lifespan
-            # 可能还没 yield（FastAPI 在 yield 前不处理 HTTP 请求）。daemon 线程
-            # 先 sleep 10s 等服务起来，然后最多重试 3 次（每次间隔 10s）。
-            data = None
-            import time
-            time.sleep(10)  # 等 lifespan yield + 服务起来
-            for _ in range(3):
-                try:
-                    # 三次采样 + 限流/超时重试最坏耗时 ~250s/档（限流主导早返 ~160s），两档 ~500s。
-                    # 正常场景 3 次采样 + 无重试约 90s/档。设 300s 覆盖正常+限流场景，病态连续
-                    # 超时场景（~335s/档）后台会先放弃，属可接受取舍。
-                    with httpx.Client(timeout=300) as client:
-                        resp = client.post(
-                            "http://127.0.0.1:9876/api/probe-response-format",
-                            json=probe_payload,
-                        )
-                        data = resp.json()
-                    if data.get("result") == "supported":
-                        break
-                except Exception:
-                    pass
-                time.sleep(10)
-            if not data or data.get("result") != "supported":
-                return  # 探测失败不写配置
-
-            mode = data.get("mode")
-            if mode not in ("json_schema", "json_object", "prompt_only"):
-                return
-
-            # 关键：prompt_only 降级时区分"真不支持"与"基础设施临时故障"
-            # - reason 含 gateway_blocked：网关 200 但响应非合法 JSON（如 GLM），
-            #   是真不支持，写入 prompt_only
-            # - reason 仅含 tier_failed（无 gateway_blocked）：3 档都因异常降级
-            #   （4xx/5xx/超时/认证/限流/网络），很可能是 API Key 临时失效或
-            #   网络波动，不写入避免覆盖用户原有配置导致永久降级
-            reason = data.get("reason", "")
-            # 新逻辑下 infra_error 走 probe_failed 早返（不写配置），rate_limited/timeout
-            # 走 probe_failed 早返（不写配置），prompt_only 必然是真不支持（gateway_blocked
-            # 或 model_rejected）。守卫保留但改为接受两种确定性不支持信号。
-            if mode == "prompt_only" and not ("gateway_blocked" in reason or "model_rejected" in reason):
-                logger.warning(
-                    f"探测结果 prompt_only 但 reason 不含确定性不支持信号，跳过写入: {reason[:100]}"
-                )
-                return
-
-            # 写入前重读文件确认 response_format_mode 仍未被其他进程写入
-            # （避免与前端 saveConfig 并发竞争覆盖用户配置）
-            with open(user_config_path, encoding="utf-8") as f:
-                fresh_config = json.load(f)
-            fresh_lightrag = fresh_config.get("lightrag_llm") or {}
-            fresh_kwargs = fresh_lightrag.get("litellm_kwargs") or {}
-            if "response_format_mode" in fresh_kwargs:
-                logger.info(
-                    "Background probe: response_format_mode already written "
-                    "by another process, skipping write"
-                )
-                return
-
-            # 写入配置（atomic write：先写临时文件再 os.replace，避免主进程
-            # 在写入过程中读到部分 JSON 触发 JSONDecodeError）
-            allowed = ["response_format"] if mode in ("json_schema", "json_object") else []
-            lightrag_llm = user_config.setdefault("lightrag_llm", {})
-            litellm_kwargs = lightrag_llm.setdefault("litellm_kwargs", {})
-            litellm_kwargs["response_format_mode"] = mode
-            litellm_kwargs["allowed_openai_params"] = allowed
-            import os
-            tmp_path = f"{user_config_path}.tmp"
-            try:
-                with open(tmp_path, "w", encoding="utf-8") as f:
-                    json.dump(user_config, f, ensure_ascii=False, indent=2)
-                os.replace(tmp_path, user_config_path)
-            except Exception:
-                # 写入或替换失败时清理临时文件，避免残留
-                try:
-                    if os.path.exists(tmp_path):
-                        os.remove(tmp_path)
-                except OSError:
-                    pass
-                raise
-            logger.info("Background probe completed: response_format_mode={}", mode)
-        except Exception as e:
-            logger.warning("Background probe failed: {}", e)
-
-    threading.Thread(target=_probe_in_background, daemon=True, name="response-format-probe").start()
 
 
 def _consume_generator(gen):
@@ -1341,9 +1186,6 @@ def _build_rag_params() -> dict[str, Any]:
     # LightRAG calls llm_model_func(prompt, system_prompt=..., **kwargs).
     # LiteLLMSession is cached and reused across calls.
     llm_model_func = _build_llm_model_func()
-
-    # 升级后首次启动后台探测 response_format 档位（不阻塞启动）
-    _trigger_background_probe_if_needed()
 
     # Build embedding function (direct local call, no proxy)
     from niu_api.internal.embedding import get_embedding_max_seq_length

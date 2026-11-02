@@ -772,9 +772,8 @@ class TestChunkConfigUnchangedI5a:
 
         import niu_api.internal.lightrag_manager as lm
 
-        # 隔离：working_dir 指 tmp、跳过后台探测、配置与 embedding 维度可控
+        # 隔离：working_dir 指 tmp、配置与 embedding 维度可控
         monkeypatch.setattr(lm, "STORAGE_DIR", tmp_path / "storage")
-        monkeypatch.setattr(lm, "_trigger_background_probe_if_needed", lambda: None)
         monkeypatch.setattr(lm, "_get_lightrag_config", lambda: {})
         monkeypatch.setattr(lm, "_get_embedding_dim_for_lightrag", lambda: 768)
 
@@ -814,7 +813,6 @@ class TestChunkConfigUnchangedI5a:
         import niu_api.internal.lightrag_manager as lm
 
         monkeypatch.setattr(lm, "STORAGE_DIR", tmp_path / "storage")
-        monkeypatch.setattr(lm, "_trigger_background_probe_if_needed", lambda: None)
         monkeypatch.setattr(lm, "_get_lightrag_config", lambda: {"chunk_token_size": 1200, "chunk_overlap_token_size": 50})
         monkeypatch.setattr(lm, "_get_embedding_dim_for_lightrag", lambda: 768)
 
