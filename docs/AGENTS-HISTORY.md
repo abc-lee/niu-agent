@@ -17,6 +17,7 @@
 - **改法**（`4ff812a2`、`f69c3e2f`、`66c9ffaa`）：`niu_api/llm_ready.py` 新增独立 `_probe_connectivity`——发 `hi`，拿到任何非空输出（正文或思考）即通过；**不传 `max_tokens`**（历史 5/50/256 均误判）、不注入 capabilities/thinking/reasoning_effort、不看 `finish_reason`；外层 try 全包 + `litellm_kwargs` isinstance 守卫，探测异常绝不穿出 lifespan。启动器删除 `probe_failed` 分支的 test-llm 兜底与 5 秒重试（`ready=false` 直接开设置页，`error` 进 warn 日志）。`lightrag_manager` 删除启动期 `response_format` 后台探测（能力探测归设置页保存链路）。**`niu_api/compat.py` 零改动**（设置页 testAndSave/`/api/test-llm`/`/api/probe-response-format`/`/api/llm-status` 行为不变）。
 - **门禁**：plan `docs/superpowers/plans/2026-11-02-startup-probe-separation.md` v6，双审 6 轮（`reviews/2026-11-02-startup-probe-separation-*.md`），最终两角零 P0/P1；P2 均为预先存在或已记录取舍（空 key 的 llm-status 仍判未配置、反代轮询空 body、思考链 >150s）。
 - **验证**：目标 8 个测试文件 **145 passed / 3 skipped**（另 2 个 live-service e2e 因当时后端未运行而连接失败，与改动无关）；真机 10:41 重启：`LLM config gate: ready=True (连通性正常（有正文输出）)`、`Scheduler system_ready signal sent`、`/api/llm-status → {"ready":true,"probe_failed":false}`、逾期任务按 10:41:52–10:42:04 依次补跑（`weekly-report-reminder` 触发后下次 11-09 09:00），messages.db 10:42:04 出现 `[定时任务] 请调用 journal-agent 生成本周周报…`。
+- **质量审查（`5ba43f59`）**：两角复审后修两处——① 启动器设置页流程仍用 `POST /api/test-llm` 决定退出，等于第二套判定（且可能在用户保存前关掉设置窗口），改为只等窗口退出（保存成功 1.5s 自关窗）；② 新探测透传 `llm.proxy`，与生产 `runner.create_client` 不一致（proxy 坏时只有探测失败），白名单去掉 proxy。另补门控 flag 往返用例、订正手册「启动自动探测 response_format」的过时表述。已知取舍：探测命中即早退 → `raw_http` 只落 request 不落 response（优先启动速度）。
 
 ---
 
