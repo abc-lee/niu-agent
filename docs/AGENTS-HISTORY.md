@@ -8,6 +8,19 @@
 
 ---
 
+### 2026-11-02
+
+#### 启动探测与设置页探测分离（修 11-01 定时任务 17 小时全停）
+
+- **事故**：11-01 15:16 启动，后端 `check_llm_ready` 探测返回 `content=""`/`thinking=""`/`finish_reason=length` → 判失败 → `llm_ready=False` → lifespan 跳过 scheduler/HAWatcher/db_monitor/脑区 gate/LightRAG 同步（整场）；启动器兜底 `POST /api/test-llm` 14 秒后用**同一个** `_probe_llm` 判通过 → 放行 assistant 但不回写门控 ⇒ 应用在跑、定时任务全停（11-01 18:00 journal-daily、11-02 06:30、09:00 周报均未触发），直到 11-02 10:41 重启才补齐。
+- **根因**：`c1ef1995` 把设置页 testAndSave 的探测抽成共享核心 `_probe_llm`，启动门控继承其能力判定（`7ad29dc7` 的 `finish_reason=length` 规则）；`f620c56f` 又让启动器在门控失败后再跑一次同一函数（两套判定写两套状态）；`40131b5f` 响应「启动只测连通性」时只剥参数、plan 明写「`_probe_llm` 本体零改动」→ 判定没剥；`875c9ba8` 另把 `response_format` 能力探测挂到启动后台。
+- **改法**（`4ff812a2`、`f69c3e2f`、`66c9ffaa`）：`niu_api/llm_ready.py` 新增独立 `_probe_connectivity`——发 `hi`，拿到任何非空输出（正文或思考）即通过；**不传 `max_tokens`**（历史 5/50/256 均误判）、不注入 capabilities/thinking/reasoning_effort、不看 `finish_reason`；外层 try 全包 + `litellm_kwargs` isinstance 守卫，探测异常绝不穿出 lifespan。启动器删除 `probe_failed` 分支的 test-llm 兜底与 5 秒重试（`ready=false` 直接开设置页，`error` 进 warn 日志）。`lightrag_manager` 删除启动期 `response_format` 后台探测（能力探测归设置页保存链路）。**`niu_api/compat.py` 零改动**（设置页 testAndSave/`/api/test-llm`/`/api/probe-response-format`/`/api/llm-status` 行为不变）。
+- **门禁**：plan `docs/superpowers/plans/2026-11-02-startup-probe-separation.md` v6，双审 6 轮（`reviews/2026-11-02-startup-probe-separation-*.md`），最终两角零 P0/P1；P2 均为预先存在或已记录取舍（空 key 的 llm-status 仍判未配置、反代轮询空 body、思考链 >150s）。
+- **验证**：目标 8 个测试文件 **145 passed / 3 skipped**（另 2 个 live-service e2e 因当时后端未运行而连接失败，与改动无关）；真机 10:41 重启：`LLM config gate: ready=True (连通性正常（有正文输出）)`、`Scheduler system_ready signal sent`、`/api/llm-status → {"ready":true,"probe_failed":false}`、逾期任务按 10:41:52–10:42:04 依次补跑（`weekly-report-reminder` 触发后下次 11-09 09:00），messages.db 10:42:04 出现 `[定时任务] 请调用 journal-agent 生成本周周报…`。
+
+---
+
+
 ### 2026-10-24
 
 #### 子 Agent 前缀缓存修复：system 只留日期 + 工具输出带 [HH:MM:SS]
