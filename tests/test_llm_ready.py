@@ -1,11 +1,12 @@
 """测试 niu_api.llm_ready：resolve_probe_budget（预算解析/逃生口）与 check_llm_ready。
 
 预算 = 120s/150s（覆盖 20-120s 首响应推理模型）；user-config llm.read_timeout
-可覆盖（逃生口——>120s 慢模型通道，有效范围 ≤190s）。与启动器 test-llm 客户端
-（230s）对齐。
-注意：check_llm_ready 函数内 `from niu_api.compat import _probe_llm` /
+可覆盖（逃生口——>120s 慢模型通道，有效范围 ≤190s）。与 settings 前端 socket
+（230s）对齐（启动器已不再自行探测）。
+注意：check_llm_ready 的连通性探测走模块级 _probe_connectivity（patch 目标
+niu_api.llm_ready._probe_connectivity）；配置读取仍是函数内
 `from niu_api.llm_proxy import get_llm_config`——patch 目标必须是源头模块
-（niu_api.compat / niu_api.llm_proxy），patch llm_ready 模块属性无效。
+（niu_api.llm_proxy）。
 """
 from unittest.mock import patch
 
@@ -102,7 +103,7 @@ async def test_check_llm_ready_pass():
     from niu_api.llm_ready import check_llm_ready
 
     with patch("niu_api.llm_proxy.get_llm_config", return_value={"apiKey": "sk", "apiBase": "https://x/v1", "model": "m"}), patch(
-        "niu_api.compat._probe_llm", return_value=(True, "模型测试通过 (model=m, provider=openai)")
+        "niu_api.llm_ready._probe_connectivity", return_value=(True, "模型测试通过 (model=m, provider=openai)")
     ) as mock_probe:
         ready, message = await check_llm_ready()
     assert ready is True
@@ -118,7 +119,7 @@ async def test_check_llm_ready_fail_probe():
     from niu_api.llm_ready import check_llm_ready
 
     with patch("niu_api.llm_proxy.get_llm_config", return_value={"apiKey": "sk", "apiBase": "https://x/v1", "model": "m"}), patch(
-        "niu_api.compat._probe_llm", return_value=(False, "API Key 无效或未授权")
+        "niu_api.llm_ready._probe_connectivity", return_value=(False, "API Key 无效或未授权")
     ):
         ready, message = await check_llm_ready()
     assert ready is False
@@ -127,8 +128,8 @@ async def test_check_llm_ready_fail_probe():
 
 @pytest.mark.asyncio
 async def test_check_llm_ready_missing_config():
-    """get_llm_config 永不 raise（异常返回空默认配置）——空配置走 _probe_llm 判空。
-    真实路径：空默认配置 → _probe_llm 判空返回 (False, 'API Key 未配置')。"""
+    """get_llm_config 永不 raise（异常返回空默认配置）——空配置走 _probe_connectivity 判空。
+    真实路径：空默认配置 → _probe_connectivity 判空返回 (False, 'API Key 未配置')。"""
     from niu_api.llm_ready import check_llm_ready
 
     with patch("niu_api.llm_proxy.get_llm_config", return_value={}):
@@ -144,7 +145,7 @@ async def test_check_llm_ready_config_read_timeout_override():
 
     cfg = {"apiKey": "sk", "apiBase": "https://x/v1", "model": "m", "read_timeout": 180}
     with patch("niu_api.llm_proxy.get_llm_config", return_value=cfg), patch(
-        "niu_api.compat._probe_llm", return_value=(True, "ok")
+        "niu_api.llm_ready._probe_connectivity", return_value=(True, "ok")
     ) as mock_probe:
         ready, _ = await check_llm_ready()
     assert ready is True
@@ -159,7 +160,7 @@ async def test_check_llm_ready_invalid_read_timeout_no_crash():
 
     cfg = {"apiKey": "sk", "apiBase": "https://x/v1", "model": "m", "read_timeout": "oops"}
     with patch("niu_api.llm_proxy.get_llm_config", return_value=cfg), patch(
-        "niu_api.compat._probe_llm", return_value=(True, "ok")
+        "niu_api.llm_ready._probe_connectivity", return_value=(True, "ok")
     ) as mock_probe:
         ready, _ = await check_llm_ready()
     assert ready is True
@@ -172,7 +173,7 @@ async def test_check_llm_ready_custom_budget():
     from niu_api.llm_ready import check_llm_ready
 
     with patch("niu_api.llm_proxy.get_llm_config", return_value={"apiKey": "sk", "apiBase": "https://x/v1", "model": "m", "read_timeout": 180}), patch(
-        "niu_api.compat._probe_llm", return_value=(True, "ok")
+        "niu_api.llm_ready._probe_connectivity", return_value=(True, "ok")
     ) as mock_probe:
         ready, _ = await check_llm_ready(read_timeout=30.0, wait_timeout=60.0)
     assert ready is True
@@ -180,8 +181,9 @@ async def test_check_llm_ready_custom_budget():
     assert mock_probe.call_args.kwargs["wait_timeout"] == 60.0
 
 
-def test_check_llm_ready_uses_minimal_probe_config(monkeypatch):
-    """启动探测只测连通性——传给 _probe_llm 的配置只含白名单键，无能力参数（用户需求 2026-08-20）。"""
+def test_check_llm_ready_passes_saved_config_to_connectivity(monkeypatch):
+    """启动探测把 get_llm_config() 原样配置交给 _probe_connectivity——白名单由
+    _probe_connectivity 内部构造（check_llm_ready 不再预剥离能力键）。"""
     import asyncio
 
     from niu_api import llm_ready
@@ -192,17 +194,17 @@ def test_check_llm_ready_uses_minimal_probe_config(monkeypatch):
         captured["config"] = config
         return True, "ok"
 
-    monkeypatch.setattr("niu_api.compat._probe_llm", fake_probe)
-    # 注意：check_llm_ready 内部是函数局部 import（from niu_api.compat import _probe_llm）
-    # → 必须 patch 源头模块 niu_api.compat._probe_llm（llm_ready 无模块级属性，patch 它无效）
+    monkeypatch.setattr("niu_api.llm_ready._probe_connectivity", fake_probe)
+    # check_llm_ready 调的是模块级 _probe_connectivity → patch llm_ready 有效；
+    # get_llm_config 是函数局部 import → 必须 patch 源头模块 niu_api.llm_proxy
     # 注入带能力参数的已保存配置（get_llm_config 返回小写键 + setdefault provider）
-    monkeypatch.setattr(
-        "niu_api.llm_proxy.get_llm_config",
-        lambda: {"apibase": "http://127.0.0.1:1", "apikey": "k", "model": "m", "type": "openai",
-                 "provider": "openai",
-                 "max_tokens": 32768, "thinking": {"type": "enabled"}, "reasoning_effort": "high",
-                 "temperature": 0.7, "litellm_kwargs": {"max_tokens": 32768, "thinking": {"type": "enabled"}}},
-    )
+    saved = {
+        "apibase": "http://127.0.0.1:1", "apikey": "k", "model": "m", "type": "openai",
+        "provider": "openai",
+        "max_tokens": 32768, "thinking": {"type": "enabled"}, "reasoning_effort": "high",
+        "temperature": 0.7, "litellm_kwargs": {"max_tokens": 32768, "thinking": {"type": "enabled"}},
+    }
+    monkeypatch.setattr("niu_api.llm_proxy.get_llm_config", lambda: dict(saved))
 
     async def run():
         return await llm_ready.check_llm_ready()
@@ -211,12 +213,14 @@ def test_check_llm_ready_uses_minimal_probe_config(monkeypatch):
 
     assert ok
     cfg = captured["config"]
-    assert set(cfg.keys()) == {"apibase", "apikey", "model", "type", "provider"}
-    assert "max_tokens" not in cfg
-    assert "thinking" not in cfg
-    assert "reasoning_effort" not in cfg
-    assert "temperature" not in cfg
-    assert "litellm_kwargs" not in cfg
+    # 原样透传（含能力键）——连通性探测靠自己的白名单排除它们
+    assert set(cfg.keys()) == set(saved.keys())
+    assert cfg["model"] == "m"
+    assert "max_tokens" in cfg
+    assert "thinking" in cfg
+    assert "reasoning_effort" in cfg
+    assert "temperature" in cfg
+    assert "litellm_kwargs" in cfg
 
 
 def test_test_llm_empty_body_uses_minimal_probe_config(monkeypatch):
