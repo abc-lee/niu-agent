@@ -493,11 +493,13 @@ class MainAgentRuntime:
         在 `_loop_body.finally` 调用（`_active` 已清空、handle 收口前），覆盖正常结束、
         LLM 错误、锁获取失败 / latch 早退 / 首帧抛错等全部退出路径。用户主动停止
         （`_stop_latched` 或协作式 `outcome.cancelled`）一律丢弃并 warning（R2）；
-        主循环不可用或调度失败则原样重入队（R8），失败归属唯一。
+        主循环不可用、调度失败或 drain 之后任何步骤抛错都原样重入队（R8），失败归属唯一。
 
         整个函数体 try/except 全包：本方法在 finally 里、`handle._finish` 之前执行，
         任何异常穿出都会让 handle 永不收口（`handle.wait()` 永久挂起）。
         """
+        items: list = []            # drained items live outside so the outer except can requeue
+        items_handled = False       # a later branch took ownership (dropped / requeued / scheduled)
         try:
             from agent.runner import drain_supplement_items, requeue_supplement_items
 
@@ -516,6 +518,7 @@ class MainAgentRuntime:
                     "[MainRuntime] %d supplement(s) dropped after stop: %s",
                     len(items), [i.message_id for i in items],
                 )
+                items_handled = True
                 return
             loop = self._get_main_loop()
             if loop is None or loop.is_closed():
@@ -523,6 +526,7 @@ class MainAgentRuntime:
                     "[MainRuntime] main loop unavailable, requeue %d supplement(s)", len(items),
                 )
                 requeue_supplement_items(items)
+                items_handled = True
                 return
             from niu_api.main_agent_supplement_followup import submit_followup_run
 
@@ -533,6 +537,7 @@ class MainAgentRuntime:
             except Exception:
                 logger.exception("[MainRuntime] supplement follow-up schedule failed; requeue")
                 requeue_supplement_items(items)
+                items_handled = True
                 return
 
             def _log_exc(f):
@@ -547,15 +552,24 @@ class MainAgentRuntime:
                     logger.error(f"[MainRuntime] supplement follow-up failed: {exc}")
 
             fut.add_done_callback(_log_exc)
+            items_handled = True   # items now belong to the scheduled follow-up run
         except Exception:
             logger.exception("[MainRuntime] tail supplement flush failed")
+            if items and not items_handled:
+                # drain 已成功但后续步骤抛错（loop 不可用 / import 失败等）：原样重入队，
+                # 绝不静默丢消息（与上方内层分支同一口径；内层 requeue 后已 return）。
+                try:
+                    requeue_supplement_items(items)
+                except Exception:
+                    logger.exception("[MainRuntime] supplement requeue after flush failure failed")
 
     def _execute(self, command: RunCommand, handle: RunHandle) -> RunOutcome:
         """Run one command while holding _chat_lock; return its RunOutcome (D-11).
 
         §4.1 steps 1-7: lock -> latch check -> clear_stop/state/history/runner.chat
-        -> outcome -> on_complete (inside the lock) -> release；释放后由 `_loop_body`
-        统一 flush 尾部残留补充消息（见 `_flush_tail_supplements`）。
+        -> outcome -> on_complete (inside the lock) -> release（`call_soon_threadsafe`
+        异步排程，不保证已被 loop 执行）；随后由 `_loop_body` 在 `_active` 清空后统一
+        flush 尾部残留补充消息（见 `_flush_tail_supplements`）。
         """
         from agent.runner import clear_stop, is_stop_requested
 

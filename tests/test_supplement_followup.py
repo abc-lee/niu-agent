@@ -145,6 +145,27 @@ def test_build_command_excludes_persisted_rows():
     assert cmd.stream is False and cmd.resources is None
 
 
+def test_group_items_preserves_first_seen_order():
+    from niu_api.main_agent_supplement_followup import group_items
+
+    items = [
+        SupplementItem(content="注入一", session_id="s1", source="user", channel="inherit"),
+        SupplementItem(
+            content="桌面一", message_id="m1", session_id="s1",
+            source="electron", channel="electron",
+        ),
+        SupplementItem(content="注入二", session_id="s1", source="user", channel="inherit"),
+        SupplementItem(
+            content="桌面二", message_id="m2", session_id="s2",
+            source="electron", channel="electron",
+        ),
+    ]
+    groups = group_items(items)
+    assert [[i.content for i in group] for group in groups] == [
+        ["注入一", "注入二"], ["桌面一"], ["桌面二"],
+    ], "必须按 (session, source, channel, channel_id) 分组且保持首次出现顺序"
+
+
 # ---------------------------------------------------------------------------
 # 2. 直驱 submit_followup_run
 # ---------------------------------------------------------------------------
@@ -202,6 +223,43 @@ async def test_submit_followup_persists_via_make_on_complete(monkeypatch):
     assert snapshot["should_push_im"] is True
     assert snapshot["im_channel_id"] == "cid-x"
     assert snapshot["reply"] == "顺延回复"
+
+
+async def test_submit_followup_run_submits_one_command_per_channel_group(monkeypatch):
+    """P3-3：不同通道/会话的残留项不得共用首条元数据——每组独立一条命令。"""
+    from niu_api import chat as chat_mod
+    from niu_api import main_agent_supplement_followup as followup_mod
+
+    store = _StubStore()
+
+    async def _get_store():
+        return store
+
+    monkeypatch.setattr("agent.session.get_message_store", _get_store)
+    monkeypatch.setattr(chat_mod, "get_or_create_runner", lambda: _ImRunner(push=False, channel=""))
+
+    submitted = []
+
+    class _Runtime:
+        def submit(self, cmd):
+            submitted.append(cmd)
+            return object()
+
+    items = [
+        SupplementItem(content="程序注入", session_id="s1", source="user", channel="inherit"),
+        SupplementItem(
+            content="桌面补充", message_id="m1", session_id="s1",
+            source="electron", channel="electron",
+        ),
+        SupplementItem(content="注入二", session_id="s1", source="user", channel="inherit"),
+    ]
+    await followup_mod.submit_followup_run(_Runtime(), items, _parent())
+
+    assert len(submitted) == 2, "inherit 组与 electron 组必须各自提交一条命令"
+    assert submitted[0].channel == "inherit" and submitted[0].exclude_message_ids == []
+    assert submitted[0].content == "[补充] 程序注入\n[补充] 注入二"
+    assert submitted[1].channel == "electron" and submitted[1].exclude_message_ids == ["m1"]
+    assert submitted[1].content == "桌面补充"
 
 
 async def test_submit_failure_writes_neutral_reply(monkeypatch):
@@ -351,8 +409,76 @@ async def test_followup_history_excludes_user_row(runtime_env, monkeypatch):
     assert calls[-1]["exclude_ids"] == {"m1"}, "follow-up 历史必须排除已落库 user 行（P2-3）"
 
 
-async def test_tail_leftover_flushes_without_pump(runtime_env, monkeypatch):
-    """P1-1：锁获取失败（pumped=False）也必须 flush——旧 _execute.finally 会整段跳过。"""
+async def test_tail_followup_end_to_end_persists_assistant_reply(runtime_env, monkeypatch):
+    """P3-4：真实 runtime + 真实 submit_followup_run/make_on_complete（不 mock persist）。
+
+    run 中 enqueue 带 message_id 的补充 → 尾部 flush 顺延 → 第二个 run 真实执行 →
+    on_complete 把 follow-up 回复写进 store（role="assistant"），队列收口（P3-6）。
+    """
+    from niu_api import chat as chat_mod
+
+    store = _StubStore()
+
+    async def _get_store():
+        return store
+
+    monkeypatch.setattr("agent.session.get_message_store", _get_store)
+    monkeypatch.setattr(chat_mod, "notify_new_message", _async_noop)
+    monkeypatch.setattr(chat_mod, "notify_llm_error_sync", lambda *a: None)
+
+    async def _push(runner_arg, reply, snapshot=None):
+        return True
+
+    monkeypatch.setattr("niu_api.channel.gateway.push_im_reply", _push)
+
+    class _E2ERunner(FakeRunner):
+        """第一轮先入队补充，第二轮给出顺延回复。"""
+
+        def __init__(self):
+            super().__init__()
+            self.should_push_im = lambda: False
+            self.get_im_channel = lambda: ""
+
+        def chat(self, session_id, user_input, stream=True, **kwargs):
+            self.last_return_value = None
+            self.calls.append(user_input)
+            if user_input == "主任务":
+                enqueue_supplement(
+                    "末轮补充", message_id="m1", session_id="s1",
+                    source="electron", channel="electron",
+                )
+                yield "父回合回复"
+            else:
+                yield "顺延回复"
+            self.last_return_value = {"result": "CURRENT_TASK_DONE"}
+
+    runner = _E2ERunner()
+    monkeypatch.setattr(chat_mod, "get_or_create_runner", lambda: runner)
+
+    rt = MainAgentRuntime(runner=runner)
+    rt.start()
+    try:
+        h = rt.submit(RunCommand(content="主任务"))
+        assert h.wait(2) == "父回合回复"
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            runtime_env.pump(1)
+            if any(row["role"] == "assistant" for row in store.added) and not rt.is_busy():
+                break
+            time.sleep(0.01)
+    finally:
+        rt.stop()
+
+    assert runner.calls == ["主任务", "末轮补充"], f"顺延 run 必须真的执行：{runner.calls}"
+    assistant_rows = [row for row in store.added if row["role"] == "assistant"]
+    assert assistant_rows, f"follow-up 回复必须落库（真实 make_on_complete）：{store.added}"
+    assert assistant_rows[-1]["content"] == "顺延回复"
+    assert runtime_env.context_manager.calls[-1]["exclude_ids"] == {"m1"}
+    assert drain_supplement_items() == [], "队列必须收口（无跨轮泄漏）"
+
+
+async def test_tail_leftover_flushes_on_lock_failure(runtime_env, monkeypatch):
+    """P1-1：锁获取失败也要 flush——旧 _execute.finally 会整段跳过（与 pumped 无关）。"""
     from niu_api import main_agent_supplement_followup as followup_mod
 
     calls = []
@@ -379,6 +505,42 @@ async def test_tail_leftover_flushes_without_pump(runtime_env, monkeypatch):
         rt.stop()
 
     assert len(calls) == 1 and calls[0][0].message_id == "m2"
+
+
+async def test_flush_exception_requeues_drained_items(runtime_env, monkeypatch):
+    """P3-1：drain 成功后 flush 抛错（如主循环查询失败）必须原样重入队，不得静默丢。"""
+    from niu_api import main_agent_supplement_followup as followup_mod
+
+    calls = []
+
+    async def _fake_submit(runtime, items, parent):
+        calls.append(list(items))
+
+    monkeypatch.setattr(followup_mod, "submit_followup_run", _fake_submit)
+
+    rt = MainAgentRuntime(runner=FakeRunner())
+
+    def _boom():
+        raise RuntimeError("loop lookup exploded")
+
+    monkeypatch.setattr(rt, "_get_main_loop", _boom)
+
+    enqueue_supplement(
+        "flush 抛错时的补充", message_id="m6", session_id="s",
+        source="electron", channel="electron",
+    )
+    rt.start()
+    try:
+        h = rt.submit(RunCommand(content="主任务"))
+        assert h.wait(2) is None
+        assert "loop lookup exploded" in (h.error or "")
+        runtime_env.pump()
+    finally:
+        rt.stop()
+
+    assert calls == [], "flush 抛错不得调度 follow-up"
+    requeued = drain_supplement_items()
+    assert [i.message_id for i in requeued] == ["m6"], "已 drain 的项必须原样重入队（P3-1）"
 
 
 async def test_tail_leftover_dropped_on_stop(runtime_env, monkeypatch, caplog):

@@ -17,7 +17,7 @@
 - **改法（用户口径：顺延成新消息）**：`agent/runner.py` 队列项升级为 `SupplementItem`（content/message_id/session/source/channel），保留 `drain_supplements()->list[str]` 旧契约，新增 `drain_supplement_items/requeue_supplement_items/format_supplement_text`；`niu_api/compat.py` 入队带 `message_id` 与 channel 映射；新增 `niu_api/main_agent_supplement_followup.py`：用 `exclude_message_ids` 排除已落库 user 行，`make_on_complete` 落库+SSE，自行 `push_im_reply` 回推 IM，submit 失败落中性行、setup 失败重入队；`agent/main_runtime.py` 把尾部 drain 从 `_execute.finally` 移到 `_loop_body.finally`（`_active` 清空之后、`handle._finish` 之前）→ 覆盖锁失败/latch 早退/首帧抛错，停止（`_stop_latched`/`outcome.cancelled`）仍丢弃并 warning。
 - **门禁**：plan `docs/superpowers/plans/2026-11-04-supplement-tail-followup.md` v3；单审两轮（`reviews/2026-11-04-supplement-tail-followup-review-{A,B}.md`，B 角零 P0/P1，P2×2/P3×5 全吸收）。
 - **验证**：目标 10 个测试文件 **120 passed / 4 skipped**；独立冒烟（真实 runtime+队列，store/runner 打桩）第二个 run 自动执行且 `exclude_ids={'m1'}`、回复落库、队列清空；停止冒烟 `dropped after stop` 且无复活。
-- **已知残余**：`_chat_lock.release` 异步执行导致的 µs 窗口内入队项要等下一次 run 尾部 flush（自愈不丢）；requeue 逐条放回队尾在失败路径下顺序可互换。
+- **已知残余**：`_chat_lock.release` 异步执行导致的 µs 窗口内入队项要等下一次 run 尾部 flush（自愈不丢）；requeue 逐条放回队尾在失败路径下顺序可互换；setup 失败重入队后无主动唤醒者——该项要等下一次 run 的轮内 drain / 尾部 flush 才投递。
 
 ---
 

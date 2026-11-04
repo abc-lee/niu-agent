@@ -291,11 +291,11 @@ def requeue_supplement_items(items) -> None:
 
 
 def format_supplement_text(contents: list[str]) -> str:
-    """补充消息合并口径的唯一来源（`drain_supplement` 与 follow-up run 共用）。
+    r"""补充消息合并口径的唯一来源（`drain_supplement` 与 follow-up run 共用）。
 
     - 无消息返回空串
     - 单条返回原文
-    - 多条合并为 "[补充] 消息1\\n[补充] 消息2"
+    - 多条合并为 r"[补充] 消息1\n[补充] 消息2"（分隔符是换行，见下方 join）
     """
     if not contents:
         return ""

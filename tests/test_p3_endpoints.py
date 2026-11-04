@@ -416,15 +416,20 @@ async def test_busy_round_enqueues_supplement_without_submitting(monkeypatch):
     runtime = _RecordingRuntime(round_active=True, busy=True)
     _patch_compat_env(monkeypatch, runner, runtime)
 
-    enqueued: list[str] = []
-    monkeypatch.setattr("agent.runner.enqueue_supplement", lambda msg, **kw: enqueued.append(msg))
+    enqueued: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "agent.runner.enqueue_supplement", lambda msg, **kw: enqueued.append((msg, kw))
+    )
 
     resp = await compat_mod.chat_session(
         compat_mod.ChatRequest(message="补充一句", session_id="default", source="electron")
     )
 
     assert resp.reply == "已收到", f"忙时应立即返回「已收到」：{resp.reply!r}"
-    assert enqueued == ["补充一句"], "忙时必须入队 supplement"
+    assert [msg for msg, _ in enqueued] == ["补充一句"], "忙时必须入队 supplement"
+    _, enqueue_kwargs = enqueued[0]
+    assert enqueue_kwargs["message_id"] == "user-msg-1", "入队元数据必须带已落库 user 行 id"
+    assert enqueue_kwargs["channel"] == "electron", "electron 来源必须以 electron 通道入队"
     assert runtime.commands == [], "忙时不得提交命令（I-6）"
     assert resp.message_id == "user-msg-1", "补充消息仍要落 user 行并回 id"
 
