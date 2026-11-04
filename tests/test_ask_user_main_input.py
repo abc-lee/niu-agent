@@ -54,7 +54,7 @@ def _patch_common(monkeypatch, registry, store, enqueued, notify_pushed):
         notify_pushed.append((msg_id, role, content, source))
 
     monkeypatch.setattr("niu_api.chat.notify_new_message", _notify)
-    monkeypatch.setattr("agent.runner.enqueue_supplement", lambda m: enqueued.append(m))
+    monkeypatch.setattr("agent.runner.enqueue_supplement", lambda m, **kw: enqueued.append(m))
     return compat
 
 

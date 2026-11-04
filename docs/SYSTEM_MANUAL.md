@@ -46,6 +46,7 @@ Niu 是一个**本地运行**的个人知识管理助手，核心理念：
 - `agent_runner_loop` 每轮在 `next_prompt` 注入前读取队列（`drain_supplement()`），将补充消息拼接到 `next_prompt` 前面
 - 补充信息作为参考在前，当前任务作为最后内容在后，LLM 优先处理当前任务
 - 所有入口（Electron chat_session）统一使用 `enqueue_supplement()`
+- 若补充消息恰好在 Agent 最后一轮到达，它会作为一个新的独立回合自动发出，而不是被丢弃。
 - 前端发送消息永远不阻塞，UI 状态由 SSE chat_busy/chat_idle 事件驱动
 
 ### 1.3 技术栈

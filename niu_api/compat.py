@@ -2029,8 +2029,14 @@ async def chat_session(request: ChatRequest) -> ChatResponse:
         from niu_api.chat import notify_new_message
         await notify_new_message(user_msg_id, "user", request.message, source="electron")
 
-        # 入队补充消息，立即返回
-        enqueue_supplement(request.message)
+        # 入队补充消息（带元数据：runtime 尾部残留会顺延成独立 follow-up run），立即返回
+        enqueue_supplement(
+            request.message,
+            message_id=str(user_msg_id),
+            session_id=request.session_id or "default",
+            source=request.source or "user",
+            channel="electron" if request.source == "electron" else "inherit",
+        )
         logger.info(f"[chat_session] Supplement enqueued: {request.message[:50]}...")
         return ChatResponse(reply="已收到", session_id="default", message_id=user_msg_id)
 

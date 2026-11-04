@@ -428,6 +428,7 @@ class MainAgentRuntime:
             if not running:
                 self._finish_unexecuted(handle)
                 continue
+            outcome: RunOutcome | None = None
             try:
                 outcome = self._execute(command, handle)
                 if outcome is None:  # defensive: _execute always yields an outcome
@@ -455,6 +456,9 @@ class MainAgentRuntime:
                 with self._state_lock:
                     if self._active is handle:
                         self._active = None
+                # P1-1：`_active` 清空之后再 drain——覆盖 lock 失败/latch 早退/首帧抛错，
+                # 并关掉「drain 后、`_active` 清空前入队」的窗口（此时仍判忙）。
+                self._flush_tail_supplements(command, handle, outcome)
                 handle._finish(handle.result, handle.error)
 
     @staticmethod
@@ -481,11 +485,77 @@ class MainAgentRuntime:
             except Exception:
                 logger.exception("[MainRuntime] done event emit failed")
 
+    def _flush_tail_supplements(
+        self, command: RunCommand, handle: RunHandle, outcome: RunOutcome | None,
+    ) -> None:
+        """见缝插针末轮残留：run 结束后把未投递的补充消息顺延成独立 follow-up run。
+
+        在 `_loop_body.finally` 调用（`_active` 已清空、handle 收口前），覆盖正常结束、
+        LLM 错误、锁获取失败 / latch 早退 / 首帧抛错等全部退出路径。用户主动停止
+        （`_stop_latched` 或协作式 `outcome.cancelled`）一律丢弃并 warning（R2）；
+        主循环不可用或调度失败则原样重入队（R8），失败归属唯一。
+
+        整个函数体 try/except 全包：本方法在 finally 里、`handle._finish` 之前执行，
+        任何异常穿出都会让 handle 永不收口（`handle.wait()` 永久挂起）。
+        """
+        try:
+            from agent.runner import drain_supplement_items, requeue_supplement_items
+
+            try:
+                items = drain_supplement_items()
+            except Exception:
+                logger.exception("[MainRuntime] drain_supplement_items failed")
+                return
+            if not items:
+                return
+            stopped = bool(getattr(handle, "_stop_latched", False)) or bool(
+                getattr(outcome, "cancelled", False)
+            )
+            if stopped:
+                logger.warning(
+                    "[MainRuntime] %d supplement(s) dropped after stop: %s",
+                    len(items), [i.message_id for i in items],
+                )
+                return
+            loop = self._get_main_loop()
+            if loop is None or loop.is_closed():
+                logger.warning(
+                    "[MainRuntime] main loop unavailable, requeue %d supplement(s)", len(items),
+                )
+                requeue_supplement_items(items)
+                return
+            from niu_api.main_agent_supplement_followup import submit_followup_run
+
+            try:
+                fut = asyncio.run_coroutine_threadsafe(
+                    submit_followup_run(self, items, command), loop,
+                )
+            except Exception:
+                logger.exception("[MainRuntime] supplement follow-up schedule failed; requeue")
+                requeue_supplement_items(items)
+                return
+
+            def _log_exc(f):
+                try:
+                    if f.cancelled():
+                        logger.warning("[MainRuntime] supplement follow-up future cancelled")
+                        return
+                    exc = f.exception()
+                except Exception:
+                    return
+                if exc is not None:
+                    logger.error(f"[MainRuntime] supplement follow-up failed: {exc}")
+
+            fut.add_done_callback(_log_exc)
+        except Exception:
+            logger.exception("[MainRuntime] tail supplement flush failed")
+
     def _execute(self, command: RunCommand, handle: RunHandle) -> RunOutcome:
         """Run one command while holding _chat_lock; return its RunOutcome (D-11).
 
         §4.1 steps 1-7: lock -> latch check -> clear_stop/state/history/runner.chat
-        -> outcome -> on_complete (inside the lock) -> release -> drain_supplements.
+        -> outcome -> on_complete (inside the lock) -> release；释放后由 `_loop_body`
+        统一 flush 尾部残留补充消息（见 `_flush_tail_supplements`）。
         """
         from agent.runner import clear_stop, is_stop_requested
 
@@ -578,7 +648,8 @@ class MainAgentRuntime:
                     )
         finally:
             # 6. close, restore source, on_complete (inside the lock, before the
-            # handle finishes), release, then drain the tail-window supplements
+            # handle finishes), release。尾部残留补充消息不在这里 drain——由
+            # `_loop_body` 的统一 flush 处理（P1-1：`_active` 清空之后）。
             if gen is not None:
                 try:
                     gen.close()
@@ -593,12 +664,6 @@ class MainAgentRuntime:
             self._call_on_complete(handle, outcome)
             if acquired:
                 self._release_chat_lock(loop)
-            if pumped:
-                try:
-                    from agent.runner import drain_supplements
-                    drain_supplements()
-                except Exception:
-                    logger.exception("[MainRuntime] drain_supplements failed")
 
         # 7. _loop_body writes the handle state and the terminal event
         return outcome

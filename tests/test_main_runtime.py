@@ -51,12 +51,15 @@ class LoopEnv:
 @pytest.fixture(autouse=True)
 def runtime_env(monkeypatch):
     """P2b 环境：_main_loop 线程、每用例新 _chat_lock、假 store/CM、单例与停止标志复位。"""
-    from agent.runner import clear_stop
+    from agent.runner import clear_stop, drain_supplements
     from niu_api import chat as chat_mod
     from niu_api import compat as compat_mod
 
     MainAgentRuntime._instance = None
     clear_stop()
+    # 全局补充队列复位：生产语义下残留项会在 run 尾部顺延成 follow-up run，
+    # 跨用例残留不得变成下个用例的额外 run（旧实现是静默丢弃，测试需显式复位）。
+    drain_supplements()
 
     loop = asyncio.new_event_loop()
     loop_thread = threading.Thread(target=loop.run_forever, name="test-main-loop", daemon=True)
@@ -886,6 +889,8 @@ def test_clear_stop_precedes_chat_lock_release(runtime_env, monkeypatch):
     try:
         h = rt.submit(RunCommand(content="x"))
         assert h.wait(3) == "chunk:x"
+        # release 走 call_soon_threadsafe（异步编排）：先让主循环执行完再断言顺序
+        runtime_env.pump(1)
     finally:
         rt.stop()
     assert order[-2:] == ["clear_stop", "release"]

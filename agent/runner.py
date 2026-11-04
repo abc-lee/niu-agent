@@ -16,6 +16,7 @@ import tempfile
 import threading
 import time
 from collections.abc import Generator
+from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
@@ -238,27 +239,78 @@ def cleanup_suspended_sync_subagents(return_value=None):
 
 
 # --- Supplement queue (见缝插针) ---
+@dataclass(frozen=True)
+class SupplementItem:
+    """一条补充消息（含入队侧元数据，runtime 尾部顺延 follow-up run 用）。"""
+
+    content: str
+    message_id: str | None = None      # 已落库 user 行（程序注入为 None）
+    session_id: str = "default"
+    source: str = "user"
+    channel: str = "inherit"           # compat 显式传 "electron"/"inherit"
+    channel_id: str = ""
+
+
 _supplement_queue = _queue_module.Queue()  # 无限长度，永不阻塞
 
 
-def enqueue_supplement(content: str):
-    """将用户在 Agent 运行期间发送的补充消息放入队列。"""
-    _supplement_queue.put(content)
+def enqueue_supplement(content, *, message_id=None, session_id="default",
+                       source="user", channel="inherit", channel_id=""):
+    """将用户在 Agent 运行期间发送的补充消息放入队列。
+
+    位置参数 `content` 保持不变（`agent/route_to_subagent.py` 程序注入走默认
+    `channel="inherit"`——不碰 IM 标志）。
+    """
+    _supplement_queue.put(SupplementItem(
+        content=content,
+        message_id=message_id,
+        session_id=session_id,
+        source=source,
+        channel=channel,
+        channel_id=channel_id,
+    ))
+
+
+def drain_supplement_items() -> list[SupplementItem]:
+    """取出所有补充项（含元数据，非阻塞，无竞态）——runtime 尾部 drain 专用。"""
+    items = []
+    while True:
+        try:
+            items.append(_supplement_queue.get_nowait())
+        except _queue_module.Empty:
+            break
+    return items
+
+
+def requeue_supplement_items(items) -> None:
+    """调度失败/主循环不可用时把已 drain 的项原样放回（按原顺序逐条放回）。"""
+    for item in items:
+        if not isinstance(item, SupplementItem):
+            item = SupplementItem(content=str(item))
+        _supplement_queue.put(item)
+
+
+def format_supplement_text(contents: list[str]) -> str:
+    """补充消息合并口径的唯一来源（`drain_supplement` 与 follow-up run 共用）。
+
+    - 无消息返回空串
+    - 单条返回原文
+    - 多条合并为 "[补充] 消息1\\n[补充] 消息2"
+    """
+    if not contents:
+        return ""
+    if len(contents) == 1:
+        return contents[0]
+    return "\n".join(f"[补充] {m}" for m in contents)
 
 
 def drain_supplements() -> list[str]:
-    """取出所有补充消息（非阻塞，无竞态）。"""
-    msgs = []
-    while True:
-        try:
-            msgs.append(_supplement_queue.get_nowait())
-        except _queue_module.Empty:
-            break
-    return msgs
+    """取出所有补充消息正文（非阻塞，无竞态）。"""
+    return [item.content for item in drain_supplement_items()]
 
 
 def drain_supplement() -> str | None:
-    """取出所有补充消息，格式化为单条字符串。
+    """取出所有补充消息，格式化为单条字符串（合并口径见 format_supplement_text）。
 
     - 无消息返回 None
     - 单条返回原文
@@ -267,9 +319,7 @@ def drain_supplement() -> str | None:
     msgs = drain_supplements()
     if not msgs:
         return None
-    if len(msgs) == 1:
-        return msgs[0]
-    return "\n".join(f"[补充] {m}" for m in msgs)
+    return format_supplement_text(msgs)
 
 
 def _sanitize_memory_content(content: str) -> str:

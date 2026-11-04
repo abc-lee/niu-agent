@@ -366,7 +366,7 @@ async def test_endpoint_without_runtime_uses_neutral_text(monkeypatch):
     _patch_compat_env(monkeypatch, runner, None)
 
     enqueued: list[str] = []
-    monkeypatch.setattr("agent.runner.enqueue_supplement", lambda msg: enqueued.append(msg))
+    monkeypatch.setattr("agent.runner.enqueue_supplement", lambda msg, **kw: enqueued.append(msg))
 
     sync_resp = await chat_mod.chat_sync(chat_mod.ChatRequest(message="你好", session_id="s"))
     assert sync_resp.reply == NEUTRAL_REPLY, f"/chat/sync 无 runtime 必须中性文案：{sync_resp.reply!r}"
@@ -398,7 +398,7 @@ async def test_compat_treats_held_chat_lock_as_round_active(monkeypatch):
 
     monkeypatch.setattr(compat_mod, "_chat_lock", _HeldLock())
     enqueued: list[str] = []
-    monkeypatch.setattr("agent.runner.enqueue_supplement", lambda msg: enqueued.append(msg))
+    monkeypatch.setattr("agent.runner.enqueue_supplement", lambda msg, **kw: enqueued.append(msg))
 
     resp = await compat_mod.chat_session(
         compat_mod.ChatRequest(message="补充一句", session_id="default", source="electron")
@@ -417,7 +417,7 @@ async def test_busy_round_enqueues_supplement_without_submitting(monkeypatch):
     _patch_compat_env(monkeypatch, runner, runtime)
 
     enqueued: list[str] = []
-    monkeypatch.setattr("agent.runner.enqueue_supplement", lambda msg: enqueued.append(msg))
+    monkeypatch.setattr("agent.runner.enqueue_supplement", lambda msg, **kw: enqueued.append(msg))
 
     resp = await compat_mod.chat_session(
         compat_mod.ChatRequest(message="补充一句", session_id="default", source="electron")
@@ -439,7 +439,7 @@ async def test_busy_round_routes_ask_user_answer_directly(monkeypatch):
     registry.set_answer.return_value = True
     enqueued: list[str] = []
     monkeypatch.setattr("agent.ask_user.get_user_ask_registry", lambda: registry)
-    monkeypatch.setattr("agent.runner.enqueue_supplement", lambda msg: enqueued.append(msg))
+    monkeypatch.setattr("agent.runner.enqueue_supplement", lambda msg, **kw: enqueued.append(msg))
 
     resp = await compat_mod.chat_session(
         compat_mod.ChatRequest(message="回答内容", session_id="default", source="electron")
@@ -458,7 +458,7 @@ async def test_pending_only_runtime_submits_through_fifo(monkeypatch):
     _patch_compat_env(monkeypatch, runner, runtime)
 
     enqueued: list[str] = []
-    monkeypatch.setattr("agent.runner.enqueue_supplement", lambda msg: enqueued.append(msg))
+    monkeypatch.setattr("agent.runner.enqueue_supplement", lambda msg, **kw: enqueued.append(msg))
 
     resp = await compat_mod.chat_session(
         compat_mod.ChatRequest(message="排队消息", session_id="default", source="electron")

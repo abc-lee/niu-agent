@@ -8,6 +8,19 @@
 
 ---
 
+### 2026-11-04
+
+#### 见缝插针末轮残留丢失（修「最后一轮发的补充消息永远没人看」）
+
+- **事故**：10:16 用户在 Agent 最后一轮 LLM 调用期间发长反馈，Agent 无回应直接收尾；用户打「?」才在下一轮靠历史带入。日志/DB 对齐：10:16:05 R1 最后一次请求 → 10:16:21 反馈落库 → 10:16:24 R1 报告落库 → 无新 run → 10:17:03 「?」→ 10:17:06 R2 的历史第 8 条才是那条反馈。
+- **根因**：`compat.py` 判 `is_round_active()` 真 → 入补充队列并回「已收到」；`agent_loop.py` 的 drain 只在有工具调用后执行，纯文本末轮 `no_tool` 直接 `continue`、`next_prompts` 为空提前 return ⇒ drain 未执行；`main_runtime._execute.finally` 的 `drain_supplements()` 静默丢弃。探针复现：末轮/工具轮后末轮的补充 `in_messages=False`、`still_queued_after_loop=True`。
+- **改法（用户口径：顺延成新消息）**：`agent/runner.py` 队列项升级为 `SupplementItem`（content/message_id/session/source/channel），保留 `drain_supplements()->list[str]` 旧契约，新增 `drain_supplement_items/requeue_supplement_items/format_supplement_text`；`niu_api/compat.py` 入队带 `message_id` 与 channel 映射；新增 `niu_api/main_agent_supplement_followup.py`：用 `exclude_message_ids` 排除已落库 user 行，`make_on_complete` 落库+SSE，自行 `push_im_reply` 回推 IM，submit 失败落中性行、setup 失败重入队；`agent/main_runtime.py` 把尾部 drain 从 `_execute.finally` 移到 `_loop_body.finally`（`_active` 清空之后、`handle._finish` 之前）→ 覆盖锁失败/latch 早退/首帧抛错，停止（`_stop_latched`/`outcome.cancelled`）仍丢弃并 warning。
+- **门禁**：plan `docs/superpowers/plans/2026-11-04-supplement-tail-followup.md` v3；单审两轮（`reviews/2026-11-04-supplement-tail-followup-review-{A,B}.md`，B 角零 P0/P1，P2×2/P3×5 全吸收）。
+- **验证**：目标 10 个测试文件 **120 passed / 4 skipped**；独立冒烟（真实 runtime+队列，store/runner 打桩）第二个 run 自动执行且 `exclude_ids={'m1'}`、回复落库、队列清空；停止冒烟 `dropped after stop` 且无复活。
+- **已知残余**：`_chat_lock.release` 异步执行导致的 µs 窗口内入队项要等下一次 run 尾部 flush（自愈不丢）；requeue 逐条放回队尾在失败路径下顺序可互换。
+
+---
+
 ### 2026-11-02
 
 #### 启动探测与设置页探测分离（修 11-01 定时任务 17 小时全停）
