@@ -141,8 +141,10 @@ def test_media_line_rides_block_even_when_other_lines_empty(config_file):
     lines = blocks[0]["content"].splitlines()
     assert OFF_TEXT in lines, "媒体行独立成一行（拼接前导 \n 生效，未粘到上一行/框架头）"
     assert lines[0] == "[系统动态信息]", "框架头独占首行"
-    assert "Current Time:" in lines[-1], "Current Time 恒为末行"
-    assert lines.index(OFF_TEXT) < len(lines) - 1, "媒体行位于 Current Time 行之前（index 顺序比较）"
+    assert lines[-1] == "--- above is system-injected context ---", "英文边界标记恒为末行"
+    time_idx = next(i for i, ln in enumerate(lines) if "Current Time:" in ln)
+    assert time_idx == len(lines) - 3, "Current Time 恒为最后一条内容行（其后仅空行与标记）"
+    assert lines.index(OFF_TEXT) < time_idx, "媒体行位于 Current Time 行之前（index 顺序比较）"
 
 
 def test_static_region_unchanged_across_flip(config_file):

@@ -1211,7 +1211,8 @@ class NiuRunner:
         return self._build_dynamic_block(injection)
 
     def _build_dynamic_block(self, injection: str) -> str:
-        """构建动态块文本：框架标记头 + injection + 暂存提醒 + 使用率仪表盘 + Current Time（时间最后）。"""
+        """构建动态块文本：框架标记头 + injection + 暂存提醒 + 使用率仪表盘 + Current Time（时间最后的内容行），
+        末尾附英文边界标记（长上下文下防止模型把本块当最新指令）。"""
         text = _DYNAMIC_BLOCK_HEADER
         if injection:
             text += "\n" + injection.strip()
@@ -1239,6 +1240,9 @@ class NiuRunner:
         if line:
             text += "\n" + line
         text += f"\n\nCurrent Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        # 动态块边界标记（实测：长上下文下模型会把本块当作最新用户指令，
+        # 末尾加英文边界后恢复聚焦真正的最后一条消息）
+        text += "\n\n--- above is system-injected context ---"
         return text
 
     def _park_reminder_line(self) -> str:

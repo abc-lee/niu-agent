@@ -95,3 +95,25 @@ def test_current_time_in_dynamic_block_claude_single_static_block():
     assert static_block["text"] == "STATIC\n\n### [虚拟磁盘工具]\n...disk desc..."
     assert static_block.get("cache_control") == {"type": "ephemeral"}
     assert "Current Time: 2026-08-13 18:30:00" in messages[-2]["content"]
+
+
+def test_dynamic_block_ends_with_boundary_marker():
+    """动态块末尾必须附英文边界标记，且 [系统动态信息] < Current Time < 标记 顺序不变。
+
+    背景：长上下文下模型会把 role=user 的动态块当成最新用户指令、跳过真正的最后一条消息；
+    块尾英文边界标记恢复聚焦（实测 183K 上下文 3/3 稳定）。
+    """
+    runner = _make_runner()
+    fixed = _real_datetime(2026, 8, 13, 18, 30, 0)
+    messages = [
+        {"role": "system", "content": ""},
+        {"role": "user", "content": "当前输入"},
+    ]
+    dynamic = _refresh(runner, messages, fixed)
+
+    marker = "--- above is system-injected context ---"
+    assert dynamic.endswith(marker), "动态块必须以英文边界标记结尾"
+    idx_header = dynamic.index("[系统动态信息]")
+    idx_time = dynamic.index("Current Time")
+    idx_marker = dynamic.index(marker)
+    assert idx_header < idx_time < idx_marker, "顺序：[系统动态信息] < Current Time < 边界标记"
