@@ -482,6 +482,7 @@ curl -X POST http://localhost:8123/api/config/config_entries/flow \
 | 条件满足后执行动作 | trigger → call_service | PASS |
 | 门锁+温度组合条件 | template trigger | PASS |
 | 条件不完全满足不通知 | template 部分满足 | PASS |
+| 连续同类事件（连续从门外开锁） | state_change 订阅“最近一次动作”锁存值 | **FAIL**（锁存值不变不触发；改用 5.6 的事件型模板传感器后 PASS） |
 
 ### 5.4 断线重连
 
@@ -521,6 +522,59 @@ curl -X POST http://localhost:8123/api/config/config_entries/flow \
 ⚠️ **单引号陷阱**：仅当 JSON 值内含单引号时（典型就是 HA 模板 `states('…')`）外层必须用双引号、并把 JSON 内部的 `"` 转义成 `\"`，**不能用单引号包整段 JSON** —— `shlex` 会在下一个单引号处结束该段并静默剥掉模板里的单引号，HA 收到的是 `states(sensor.lock_method)`，不报错但渲染结果不对。值内没有单引号的 JSON 仍可按手册既有示例用单引号。
 
 **手改 `~/.niu/ha-config.json`**：`variables` 必须是对象、每个值必须是标量（字符串/数字/布尔），且不得包含保留键 `trigger`；不满足的条目在建立订阅时被剔除（`ha_subscribe` 侧同样直接拒绝）。
+
+### 5.6 订阅“锁存值”会漏报（真实案例：门锁，2026-11-12）
+
+**现象**：订阅 `state_change` + 固定 `to_state`（如门锁 `outside_unlock`）后，第一次能收到，之后连续同类事件全部收不到；与此同时 HA 侧该设备的数据明显在更新（`timestamp`、开锁方式每天都有新值），但被订阅的那个实体本身没变。
+
+**根因**：HA 的 `state` 触发器只在**实体状态发生变化**时触发。很多集成把“最近一次事件”暴露成一个**锁存值**——例如 `sensor.lumi_bmcn03_4cc1_lock_action` 只保存最后一次锁动作。连续两次都是 `outside_unlock` 时值没变，HA 既不产生 `state_changed`，也不会因为“又发生了一次同样的事件”而补偿触发（该实体的属性也不变，所以连属性变化事件都没有）。
+
+**判别方法（三步）**：
+1. `GET /api/states/<entity>` 看被订阅实体的 `last_changed` 是否停在很久以前；
+2. 对比同一设备的“每事件必变”信号（如 `..._timestamp`、`..._lock` 开锁方式）是否仍在更新；
+3. 查历史 `GET /api/history/period/<起始时间>?filter_entity_id=<entity>`：如果只剩 `unavailable`/首次回填行，说明真实事件从未改变过它。
+
+**正确做法（二选一）**：
+1. **首选/最简**：订阅“每次事件都会变”的信号（通常是 `..._timestamp`），用 `variables` 把动作/方式带进推送。代价是该类设备的**所有**事件都会触发，`description` 要写清适用范围。
+2. **必须按动作过滤时**：在 HA 里加一个模板传感器，只在目标事件发生时改变 state；Niu 订阅这个传感器，且**不要写 `to_state`**（它的值每次事件都不同）。要点是从**同一次属性更新**里同时取动作与时间戳，避免两个实体更新顺序带来的竞态。
+
+门锁落地示例（`~/ha-config/configuration.yaml`）：
+
+```yaml
+template:
+  - triggers:
+      - trigger: state
+        entity_id: button.lumi_bmcn03_4cc1_info   # 每次云端事件都会更新属性的 info 实体
+    sensor:
+      - name: "门锁门外开锁"
+        unique_id: lock_outside_unlock_event
+        default_entity_id: sensor.lock_outside_unlock_event
+        device_class: timestamp
+        state: >-
+          {% set attrs = trigger.to_state.attributes %}
+          {% if attrs.get('lock_action') == 'outside_unlock' and attrs.get('timestamp') %}
+            {{ attrs.get('timestamp') }}
+          {% else %}
+            {{ this.state }}
+          {% endif %}
+```
+
+对应订阅（`~/.niu/ha-config.json`，或 `ha_subscribe`）：
+
+```json
+{"id": "ha_trig_...",
+ "entity_id": "sensor.lock_outside_unlock_event",
+ "condition": "state_change",
+ "variables": {"lock_method": "{{ states('sensor.lumi_bmcn03_4cc1_lock') }}"}}
+```
+
+设计要点：
+- 用 `trigger.to_state.attributes` 一次取全（动作 + 时间戳来自同一份事件数据），不要分别读两个实体的当前状态。
+- 非目标事件分支返回 `this.state`（保持原值）⇒ 不产生 `state_changed`，不会误报。
+- 首次 `unknown → 时间戳` 的转换会被 watcher 的恢复守卫丢弃（见 5.5），重启后不会误报“有人开锁”。
+- 模板传感器的 state 是事件时间戳，因此订阅里**不能**把 `to_state` 写成固定值。
+
+**历史数据示例**：该门锁的 `lock_action` 在 11-02~11-09 一直是 `inside_unlock ↔ outside_unlock` 成对出现（每次都变，所以订阅一直正常）；11-09 10:20 之后再也没有 `inside_unlock`，值钉死在 `outside_unlock`，订阅从此静默。同期 `lock`（开锁方式）与 `timestamp` 每天都有更新，证明数据没有丢、丢的是“触发条件”。
 
 ## 6. 测试结果汇总
 
@@ -593,6 +647,13 @@ curl -X POST http://localhost:8123/api/config/config_entries/flow \
 - 验证链接有时效性（约2-3分钟），必须快速完成
 - 验证完成后 Config Flow 自动推进到设备选择步骤
 - 这是 Agent 需要用户配合的关键步骤，但只需一次（后续 token 自动续期）
+
+### 7.8 订阅“锁存值”导致同类事件漏报
+
+- 现象：门锁第一次开锁有推送，之后连续几天收不到；HA 实体 `..._lock_action` 的 `last_changed` 停在几天前，但同设备的 `..._timestamp`、`..._lock`（开锁方式）每天都有更新。
+- 原因：`condition=state_change` + 固定 `to_state` 订阅的是“最近一次事件”的锁存值；连续同类事件值不变 ⇒ HA 不产生 `state_changed` ⇒ 订阅永远不再触发。不是数据丢失、不是 WS 断线、也不是 HA 故障。
+- 修复：改用“每事件必变”的时间戳信号，或在 HA 里加模板传感器把目标事件转成会变化的 state（详见 5.6，含现成 YAML）。
+- 排查顺序：`last_changed` → 历史行 → 同设备其它信号是否在更新 → 最后才怀疑连接/过滤。`unavailable → X` 的回填行被 watcher 丢弃属正常（见 5.5），不要把它当成“订阅坏了”。
 
 ## 8. 真实设备接入验证（Phase 3）
 
@@ -976,7 +1037,7 @@ Xiaomi Miot 安装后，HA 中新增以下服务域：
 | `ha_status` 返回空 | 确认 `~/.niu/ha-config.json` 中 URL/Token 有效；确认 HA 已启动且实体未被 `EXCLUDED_DOMAINS` 过滤 |
 | `ha_control` 报错 | 用 `ha_status --entity-id <id>` 查看该实体的 `services` 是否包含目标服务 |
 | 模拟实体不可见 | `input_*` domain 被 `ha_status` 过滤，只能通过 REST API `/api/states` 访问 |
-| 事件推送未收到 | 查 `ha_watcher` stdout 日志；确认 `subscribe_trigger` 订阅成功且条件正确 |
+| 事件推送未收到 | 先看被订阅实体的 `last_changed` 是否停在很久以前（锁存值漏报，见 5.6/7.8），再看 `ha_watcher` stdout 日志；确认 `subscribe_trigger` 订阅成功且条件正确 |
 
 ### 13.5 存量自动化引用了不存在的 `scene.<uuid>` 时如何核查
 
