@@ -438,8 +438,6 @@ class _FakeCompactionCtx:
     def _sync_add_message(self, *args, **kwargs):
         return "msg-x"
 
-    _llm_config = None
-    _store = None
     _system_msg = None
 
 
@@ -456,9 +454,7 @@ def _run_real_compression(db_messages, messages, rebuild_raises: bool = False,
         if rebuild_raises else patch.object(agent_loop,
                                             "_rebuild_messages_after_compact",
                                             wraps=agent_loop._rebuild_messages_after_compact)
-    with patch.object(agent_loop, "_extract_f1_before_compress", return_value=True), \
-         patch.object(agent_loop, "_extract_cooldown_active", return_value=False), \
-         patch.object(agent_loop, "_run_summary_llm", return_value="总结"), \
+    with patch.object(agent_loop, "_run_summary_llm", return_value="总结"), \
          patch.object(agent_loop, "_persist_compression_triplet"), \
          patch.object(agent_loop, "_notify_compact_progress"), \
          rebuild:

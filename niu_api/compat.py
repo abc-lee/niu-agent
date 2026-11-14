@@ -1873,8 +1873,6 @@ def _run_idle_compression(runner, history, gate_acquired: bool = True) -> str:
     ctx = SimpleNamespace(
         _sync_get_messages=runner._sync_get_messages,
         _sync_add_message=runner._sync_add_message,
-        _llm_config=runner.llm_config,
-        _store=None,  # runner 无 _store；align best-effort 跳过（提炼仍可跑）
         _system_msg=system_msg,
         _blocks_db_path=None,
         _last_compacted_view=None,
@@ -1887,7 +1885,7 @@ def _run_idle_compression(runner, history, gate_acquired: bool = True) -> str:
         )
         if did:
             return "compacted"
-        # 压缩被跳过（提炼失败冷却/无 DB 消息）：manual 意图已被 consume，如实返回
+        # 压缩被跳过（无可压实内容或压实失败）：manual 意图已被 consume，如实返回
         return "skipped"
     except Exception as e:
         logger.exception(f"[ChatSession] idle compression failed: {e}")
@@ -1959,7 +1957,7 @@ async def chat_session(request: ChatRequest) -> ChatResponse:
         if result == "compacted":
             return ChatResponse(reply="上下文压缩完成", session_id="default")
         if result == "skipped":
-            return ChatResponse(reply="压缩已跳过（内容提炼冷却或无内容可压），可稍后再试", session_id="default")
+            return ChatResponse(reply="压缩未完成（无可压实内容或压实失败），可稍后再试", session_id="default")
         return ChatResponse(reply=f"压缩执行异常：{result}", session_id="default")
 
     from niu_api.config import get_config

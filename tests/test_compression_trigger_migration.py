@@ -6,7 +6,7 @@
 3. chat_session 闲时 /compact → 直调受控压缩（mock run_controlled_compression）+ finally consume
 4. agent_loop 响应后不再压实（主 Agent）：usage 达线 → 不置压缩意图、不闩 AUTO_GATE（on_context_high_usage 参数已删）
 5. 组装出口置 auto 意图（Step 4b）：get_context_for_chat 达线 → request_compression("auto") + 不就地压实
-6. manual 意图 + 提炼失败冷却期：门 defer（不落空转、client.chat 仍发生、manual 意图重设）
+6. manual 意图不再受冷却 defer：门立即执行压缩（不落空转、client.chat 仍发生、意图被消费）
 """
 from unittest.mock import MagicMock, Mock, patch
 
@@ -234,7 +234,7 @@ async def test_assembly_exit_sets_auto_intent(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# 6. manual 意图 + 提炼失败冷却期：门 defer（不落空转、意图重设）——行为锁
+# 6. manual 意图：门立即执行压缩（不落空转、意图被消费）——行为锁
 # ---------------------------------------------------------------------------
 
 def test_manual_intent_executes_immediately_no_send_loss():

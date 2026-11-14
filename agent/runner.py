@@ -1719,8 +1719,6 @@ class NiuRunner:
             ctx = SimpleNamespace(
                 _sync_get_messages=self._sync_get_messages,   # runner bound method
                 _sync_add_message=self._sync_add_message,     # runner bound method
-                _llm_config=self.llm_config,
-                _store=getattr(self, "_store", None),         # align 用（best-effort）
                 _system_msg=messages[0] if messages and messages[0].get("role") == "system" else None,
                 _blocks_db_path=None,                          # 默认块库路径
                 _last_compacted_view=None,                     # 由 _compact_db_view 回填

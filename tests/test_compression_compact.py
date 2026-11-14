@@ -21,7 +21,7 @@ def _mk_ctx():
 
 
 def test_full_flow_compacts_and_rebuilds_messages():
-    """完整受控压缩：提炼过 → 总结（仅内存）→ DB 压实 → 三件套落库 → 完成提示注入 → 原 user 指令最后。"""
+    """完整受控压缩：总结（仅内存）→ DB 压实 → 三件套落库 → 完成提示注入 → 原 user 指令最后。"""
     ctx = _mk_ctx()
     client = MagicMock()
 
@@ -36,8 +36,7 @@ def test_full_flow_compacts_and_rebuilds_messages():
         {"role": "user", "content": "用户原指令"},
     ]
 
-    with patch("agent.generic.agent_loop._extract_f1_before_compress", return_value=True), \
-         patch("agent.generic.agent_loop._run_summary_llm", return_value="总结文本"), \
+    with patch("agent.generic.agent_loop._run_summary_llm", return_value="总结文本"), \
          patch("agent.generic.agent_loop._persist_compression_triplet") as m_persist, \
          patch("agent.generic.agent_loop._compact_db_view", return_value=(True, {"usage": 0.1})) as m_compact, \
          patch("agent.generic.agent_loop._rebuild_messages_after_compact",
@@ -214,8 +213,7 @@ def test_compact_success_keeps_latch_when_not_reset():
     client = MagicMock()
     orig = [{"role": "system", "content": "sys"}, {"role": "user", "content": "原指令"}]
     # stats usage=0.85（≥ 复位线 0.78）→ 成功但保持闩锁
-    with patch("agent.generic.agent_loop._extract_f1_before_compress", return_value=True), \
-         patch("agent.generic.agent_loop._run_summary_llm", return_value=""), \
+    with patch("agent.generic.agent_loop._run_summary_llm", return_value=""), \
          patch("agent.generic.agent_loop._compact_db_view",
                return_value=(True, {"usage": 0.85})), \
          patch("agent.context_assembler.compaction.AUTO_GATE") as m_gate, \
@@ -236,8 +234,7 @@ def test_compact_success_release_when_reset():
     ctx = _mk_ctx()
     client = MagicMock()
     orig = [{"role": "system", "content": "sys"}, {"role": "user", "content": "原指令"}]
-    with patch("agent.generic.agent_loop._extract_f1_before_compress", return_value=True), \
-         patch("agent.generic.agent_loop._run_summary_llm", return_value=""), \
+    with patch("agent.generic.agent_loop._run_summary_llm", return_value=""), \
          patch("agent.generic.agent_loop._compact_db_view",
                return_value=(True, {"usage": 0.60})), \
          patch("agent.context_assembler.compaction.AUTO_GATE") as m_gate, \
@@ -258,8 +255,7 @@ def test_compact_failure_keeps_original_messages():
     ctx = _mk_ctx()
     client = MagicMock()
     orig = [{"role": "system", "content": "sys"}, {"role": "user", "content": "原指令"}]
-    with patch("agent.generic.agent_loop._extract_f1_before_compress", return_value=True), \
-         patch("agent.generic.agent_loop._run_summary_llm", return_value=""), \
+    with patch("agent.generic.agent_loop._run_summary_llm", return_value=""), \
          patch("agent.generic.agent_loop._compact_db_view", return_value=(False, {})), \
          patch("agent.context_assembler.compaction.AUTO_GATE") as m_gate:
         new_msgs, did = run_controlled_compression(list(orig), ctx, client, 1)
@@ -281,8 +277,7 @@ def test_rebuild_exception_keeps_did_true_and_system():
         {"role": "system", "content": "sys"},
         {"role": "user", "content": "用户原指令"},
     ]
-    with patch("agent.generic.agent_loop._extract_f1_before_compress", return_value=True), \
-         patch("agent.generic.agent_loop._run_summary_llm", return_value="总结文本"), \
+    with patch("agent.generic.agent_loop._run_summary_llm", return_value="总结文本"), \
          patch("agent.generic.agent_loop._compact_db_view", return_value=(True, {"usage": 0.1})), \
          patch("agent.generic.agent_loop._rebuild_messages_after_compact",
                side_effect=RuntimeError("rebuild boom")), \
@@ -426,13 +421,9 @@ def test_compact_db_view_db_read_failure_returns_false():
     assert stats == {}
 
 
-def test_compaction_never_calls_entity_extractor(tmp_path):
-    """提炼后置：压缩关键路径不得调用 entity-extractor，且冷却不参与。"""
+def test_compaction_never_calls_entity_extractor():
+    """提炼后置：压缩关键路径不得调用 entity-extractor。"""
     ctx = _mk_ctx()
-    f1 = tmp_path / "F1_extract_source.md"
-    f1.write_text('{"msg_id": "m1", "role": "user"}\n', encoding="utf-8")
-    ctx._f1_path = str(f1)
-    ctx._llm_config = MagicMock()
     client = MagicMock()
     orig = [{"role": "system", "content": "sys"}, {"role": "user", "content": "指令"}]
 
@@ -448,19 +439,13 @@ def test_compaction_never_calls_entity_extractor(tmp_path):
     m_extract.assert_not_called()
 
 
-def test_compaction_ignores_extract_cooldown(monkeypatch):
-    """冷却期也必须立即压缩（冷却概念已删除）。"""
-    ctx = _mk_ctx()
-    client = MagicMock()
-    orig = [{"role": "user", "content": "指令"}]
-    # 若实现仍引用该符号，patch 会成功并把冷却置为生效；实现删除后 patch 会失败——
-    # 用 raising=False 让两种实现都能跑，断言只看 did。
-    monkeypatch.setattr("agent.generic.agent_loop._extract_cooldown_active",
-                        lambda: True, raising=False)
-    with patch("agent.generic.agent_loop._run_summary_llm", return_value="总结"), \
-         patch("agent.generic.agent_loop._compact_db_view", return_value=(True, {"usage": 0.1})), \
-         patch("agent.generic.agent_loop._persist_compression_triplet"), \
-         patch("agent.generic.agent_loop._rebuild_messages_after_compact",
-               side_effect=lambda m, c, s: m):
-        _, did = run_controlled_compression(list(orig), ctx, client, 0)
-    assert did is True
+def test_cooldown_symbols_removed():
+    """冷却概念已删除：模块不得再暴露相关符号。
+
+    名称去前缀拼接：Task 2 Step 3 的字面 grep 门禁要求零残留，本断言自身不得计入。
+    """
+    import agent.generic.agent_loop as m
+    removed = ("extract_cooldown_active", "mark_extract_failed",
+               "reset_extract_cooldown", "EXTRACT_RETRY_COOLDOWN_SECONDS")
+    for name in removed:
+        assert not hasattr(m, "_" + name), f"_{name} 应已删除"

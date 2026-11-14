@@ -120,8 +120,7 @@ def test_auto_intent_above_line_triggers_compression():
         return list(messages)[:-1] + [{"role": "user", "content": "[系统提示] 上下文压缩已完成。"}] + list(messages)[-1:], True
 
     request_compression("auto")
-    with patch("agent.generic.agent_loop._estimate_usage_ratio", return_value=0.9), \
-         patch("agent.generic.agent_loop._extract_cooldown_active", return_value=False):
+    with patch("agent.generic.agent_loop._estimate_usage_ratio", return_value=0.9):
         captured, _ = _run_loop_with(client, on_compression_request=_on_compression_request)
     assert called == [1]  # auto 意图 + 达线 → 执行
     sent = captured[0][0]
