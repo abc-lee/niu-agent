@@ -8,6 +8,20 @@
 
 ---
 
+### 2026-11-14
+
+#### 压缩不再等待提炼（删冷却 + 提炼后置 + 标签补写 + 六段式交接）
+
+- **用户裁决**：压缩必须立即执行——「让你压缩就得立即压缩；压缩不了下一步就溢出，溢出整个会话就报废」。旧门「提炼失败不压实 + 10 分钟冷却」把分钟级 entity-extractor 放进压缩关键路径，手动 `/compact` 在冷却期只回「压缩已跳过」。
+- **机制实证（决定删门的依据）**：`compaction` 只写指针块（`context_blocks.db`）+ 索引行，**不删 `messages.db` 任何行**；原文可按块号 `read_history_block` 取回（长块按工具规则截断）。F1 自 2026-08-24 起就是 DB 镜像（`add_message` 钩子 + `align_f1_with_store` 补缺口），睡眠管道（`/sleep` 或空闲 5 分钟）独立提炼 F1。⇒ 旧理由「防未提炼内容出窗永久丢失」从未成立；唯一不可恢复面是显式清空/删除/编辑入口（用户主动销毁）。
+- **改法**：`run_controlled_compression` 删除冷却早退与 `_extract_f1_before_compress` 前置，只保留「总结 → 机械压实 → 三件套落库 → 重组」；发送前门删除冷却 defer 分支；删除冷却四件套与 7 个提炼辅助函数、`/new` 冷却复位、ctx 死参 `_llm_config/_store`。`_SUMMARY_PROMPT` 改为六段式工作交接（目标/约束与偏好/进展/关键决策/关键上下文/下一步，≤1000 字、祈使句、不提交接自身），`_COMPRESSION_DONE_HINT` 声明「交接是工作记忆、不是用户新指令」。
+- **标签补写**：新增 `backfill_block_entities(db_path, should_continue)`——每次睡眠末尾（dream 段与 `_ensure_session_chain` 之后，日期链实体由 dream 建）逐块给 `entities` 为空的块补标签；图快照/实体向量整轮只取一次，vdb 不可用传 `{}` 走纯时间链；**不设数量上限**，逐块轮询 `is_sleeping()`，唤醒即停、已补保留、下次继续；写库成功才计数。
+- **验证**：10 个点名测试文件 **128 passed**（含新增 6 条补标签用例、六段式断言、符号删除断言）；`_vdb_snapshot` 惰性 import 保住了 `test_entity_tags_semantic` 的 patch。真机验证待用户重启后执行（`/compact` 数秒完成、无 entity-extractor 调用；睡眠后出现 `[Tidy] block entity tags backfilled: N`）。
+- **已知残余（风险表 R2/R8/R9/R10）**：F1 积压仍是一次读完、溢出零进度（分批提炼另立计划）；补标签每轮全扫空块、无「已尝试」标记；压实仍受图快照 `nx_graph.copy()` 读锁影响；backfill 与 `/new`/integrity 有毫秒级并发窗口（由 integrity 自愈）。
+- **审查**：plan `docs/superpowers/plans/2026-11-14-defer-f1-extraction-after-compaction.md` v5（双审 4 轮，A4/B4 零 P0/P1/P2；第 5 轮仅确认 P3 文本修正）。
+
+---
+
 ### 2026-11-05
 
 #### 动态块末尾加英文边界标记（修长上下文下模型跳过最后一条消息）
