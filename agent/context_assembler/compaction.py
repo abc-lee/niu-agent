@@ -267,7 +267,9 @@ def backfill_block_entities(
 
     - 不设数量上限：逐块处理，每块前调一次 should_continue()（睡眠管道传 is_sleeping），
       返回 False 立即停止；已写入的块保留，下次睡眠从未补的块继续（幂等）。
-    - 图快照/实体向量只取一次，逐块复用；collect_tags 失败/空标签 → 不写、不覆盖已有。
+    - 图快照/实体向量只取一次，逐块复用；候选池空的块（块日期无会话实体）
+      直接跳过、不调 collect_tags（不白做 embedding）；collect_tags 失败/空标签
+      → 不写、不覆盖已有。
     返回本次被补标签的块数。
     """
     from agent.context_assembler import entity_tags
@@ -282,19 +284,16 @@ def backfill_block_entities(
         # 图取不到 → 本轮直接 0，绝不逐块重取（降级轮会退化成 N 次全图拷贝）
         logger.debug("[Compaction] backfill skipped: graph snapshot unavailable")
         return 0
-    try:
-        ent_vecs = entity_tags._vdb_snapshot()
-    except Exception as e:  # 防御：_vdb_snapshot 已自吞异常，留此兼容未来改动
-        logger.debug(f"[Compaction] backfill: vdb snapshot unavailable: {e}")
-        ent_vecs = None
-    if ent_vecs is None:
-        # 传空 dict（= 已提供但不可用）→ collect_tags 走纯时间链，不逐块重取 vdb 快照
-        ent_vecs = {}
+    # _vdb_snapshot 只会返回 dict 或 None（内部已吞全部异常）；None → {} 即「已提供
+    # 但不可用」→ collect_tags 走纯时间链，不逐块重取 vdb 快照。
+    ent_vecs = entity_tags._vdb_snapshot() or {}
 
     updated = 0
     for b in empty:
         if not cont():
             break
+        if not entity_tags.tags_for_range(snapshot, b.time_start, b.time_end):
+            continue  # 候选池空 ⇒ 语义段恒空（chosen ⊆ 候选池），无需 encode
         try:
             tags = entity_tags.collect_tags(
                 [(b.time_start, b.time_end)], [b.first_user],

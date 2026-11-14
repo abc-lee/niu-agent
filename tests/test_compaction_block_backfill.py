@@ -16,10 +16,25 @@ def _blk(i, t0, t1, entities=None):
     )
 
 
+class _PoolGraph:
+    """图快照替身：任一「YYYY-MM-DD会话」节点都挂同一实体 → 候选池恒非空。
+
+    backfill 在调 collect_tags 前用 tags_for_range 做「候选池空」剪枝，剪枝空则
+    整块跳过；这些用例锁的是传参/计数/轮询，故快照必须给出非空池。
+    """
+
+    def has_node(self, node):
+        return str(node).endswith("会话")
+
+    def __getitem__(self, node):
+        return {"A": {"weight": 1.0}}
+
+
 @contextmanager
 def _graph(tags):
     """模拟图可用 + 标签结果（快照/向量只取一次，collect_tags 逐块返回）。"""
-    with patch("agent.context_assembler.entity_tags._graph_snapshot", return_value=object()), \
+    with patch("agent.context_assembler.entity_tags._graph_snapshot",
+               return_value=_PoolGraph()), \
          patch("agent.context_assembler.entity_tags._vdb_snapshot", return_value={}), \
          patch("agent.context_assembler.entity_tags.collect_tags", return_value=tags):
         yield
@@ -70,7 +85,8 @@ def test_backfill_fetches_snapshot_once(tmp_path):
     db = tmp_path / "blocks.db"
     upsert_blocks([_blk(i, f"2026-11-0{i}T10:00:00", f"2026-11-0{i}T11:00:00")
                    for i in (1, 2, 3)], db)
-    with patch("agent.context_assembler.entity_tags._graph_snapshot", return_value=object()) as m_snap, \
+    with patch("agent.context_assembler.entity_tags._graph_snapshot",
+               return_value=_PoolGraph()) as m_snap, \
          patch("agent.context_assembler.entity_tags._vdb_snapshot", return_value={}) as m_vdb, \
          patch("agent.context_assembler.entity_tags.collect_tags", return_value=[["A"]]) as m_collect:
         backfill_block_entities(db)
@@ -94,9 +110,31 @@ def test_backfill_never_raises(tmp_path):
     """向量快照不可用（返回 None，不抛）→ 只取一次并传 {}；collect_tags 异常按块跳过。"""
     db = tmp_path / "blocks.db"
     upsert_blocks([_blk(1, "2026-11-01T10:00:00", "2026-11-01T11:00:00")], db)
-    with patch("agent.context_assembler.entity_tags._graph_snapshot", return_value=object()), \
+    with patch("agent.context_assembler.entity_tags._graph_snapshot",
+               return_value=_PoolGraph()), \
          patch("agent.context_assembler.entity_tags._vdb_snapshot", return_value=None) as m_vdb, \
          patch("agent.context_assembler.entity_tags.collect_tags", side_effect=RuntimeError("graph down")) as m_collect:
         assert backfill_block_entities(db) == 0
     assert m_vdb.call_count == 1
     assert m_collect.call_args.kwargs["ent_vecs"] == {}
+
+
+def test_backfill_skips_block_with_empty_candidate_pool(tmp_path):
+    """候选池空（块日期无会话节点）→ 剪枝直接跳过，不调 collect_tags（不白跑 encode）。"""
+    db = tmp_path / "blocks.db"
+    upsert_blocks([_blk(1, "2026-11-01T10:00:00", "2026-11-01T11:00:00")], db)
+
+    class _NoSessionGraph:
+        def has_node(self, node):
+            return False
+
+        def __getitem__(self, node):
+            raise KeyError(node)
+
+    with patch("agent.context_assembler.entity_tags._graph_snapshot",
+               return_value=_NoSessionGraph()), \
+         patch("agent.context_assembler.entity_tags._vdb_snapshot", return_value={}), \
+         patch("agent.context_assembler.entity_tags.collect_tags") as m_collect:
+        assert backfill_block_entities(db) == 0
+    m_collect.assert_not_called()
+    assert load_all(db)[0].entities == []

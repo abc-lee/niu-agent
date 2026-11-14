@@ -8,6 +8,7 @@
   候选池空 / 图快照 None / 语义段 catch-all）→ 不抛出、落点正确
 - first_users=None 等价性锁（与逐块 tags_for_range 输出一致）
 - archive 接线传参断言（first_users 非空且与 time_ranges 等长）
+- 快照复用契约（入参 snapshot 非 None → 不再取图快照）
 
 全部 mock/临时 DB：FakeEmbedModel 替代真实 bge 模型，手造 vdb storage
 （_NanoVectorDB__storage {data, matrix}），不加载 ~400MB 模型、不碰真实
@@ -434,3 +435,19 @@ class TestCandidatePoolParity:
         snapshot = graph.copy()
         assert entity_tags._candidate_pool(snapshot, t0, t1) == {}
         assert entity_tags.tags_for_range(snapshot, t0, t1) == []
+
+
+# =============================================================================
+# ⑦ 快照复用契约（补标签批量路径：入参 snapshot 非 None → 不再取图快照）
+# =============================================================================
+
+class TestSnapshotReuse:
+    def test_collect_tags_reuses_provided_snapshot(self, monkeypatch):
+        """入参 snapshot 非 None 时不得再取图快照（补标签批量路径的性能契约）。"""
+        model = FakeEmbedModel({"q-diet": _Q_DIET})
+        _install(monkeypatch, _STD_GRAPH, _STD_STORAGE, model=model)
+        snap = entity_tags._graph_snapshot()
+        with patch.object(entity_tags, "_graph_snapshot") as m_snap:
+            result = entity_tags.collect_tags(_one_range(), ["q-diet"], snapshot=snap)
+        m_snap.assert_not_called()
+        assert result == [_SEMANTIC_TOP3]   # 非平凡：复用入参快照走完语义段
