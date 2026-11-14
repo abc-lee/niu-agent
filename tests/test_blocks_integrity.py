@@ -23,6 +23,7 @@ from agent.context_assembler.blocks import PointerBlock, load_all, upsert_blocks
 from agent.context_assembler.calibration import DEFAULT_RATIO
 from agent.context_assembler.compaction import AUTO_GATE
 from agent.context_manager import ContextManager
+from agent.generic.agent_loop import _SUMMARY_PROMPT, _COMPRESSION_DONE_HINT
 
 
 # ---------------------------------------------------------------------------
@@ -246,10 +247,14 @@ class TestResetDerivedState:
         assert AUTO_GATE.try_acquire(0.9) is True  # 闩锁
 
         cm_calls = []
+        invalidated = []
 
         class _FakeCM:
             def set_system_token_estimate(self, n):
                 cm_calls.append(n)
+
+            def invalidate_visible_tool_rowids(self):
+                invalidated.append(True)
 
         import agent.context_manager as cm_module
 
@@ -262,6 +267,7 @@ class TestResetDerivedState:
             assert calibration.get_ratio(cal_path) == DEFAULT_RATIO  # 缓存复位
             assert AUTO_GATE.try_acquire(0.9) is True  # 闩锁已解除可再触发
             assert cm_calls == [0]  # 内存 system 估算作废
+            assert invalidated == [True]  # 视图内工具 rowid 可见集作废
         finally:
             AUTO_GATE.release()  # 不污染同进程其他测试
 
@@ -316,9 +322,9 @@ class TestTransitionOverlap:
         rows = [
             ("m1", "user", "指令帮我部署服务"),
             ("m2", "assistant", "a1"),
-            ("m3", "user", "[系统提示] 上下文即将压缩，超出保留范围的早期对话将被归档移出。"),
+            ("m3", "user", _SUMMARY_PROMPT),
             ("m4", "assistant", "总结内容"),
-            ("m5", "user", "[系统提示] 上下文压缩已完成。"),
+            ("m5", "user", _COMPRESSION_DONE_HINT),
             ("m6", "assistant", "a2"),
         ]
         conn = sqlite3.connect(str(messages_db))

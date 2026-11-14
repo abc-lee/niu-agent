@@ -1,5 +1,5 @@
 # tests/test_compression_summary.py
-"""压缩总结：承上启下 prompt、tools=[] 调用、bypass+skip_mirror 落库。"""
+"""压缩总结：六段式工作交接 prompt、tools=[] 调用、bypass+skip_mirror 落库。"""
 from unittest.mock import patch, MagicMock
 
 from agent.generic.agent_loop import (
@@ -9,10 +9,20 @@ from agent.generic.agent_loop import (
 
 
 def test_summary_prompt_is_handoff_oriented():
-    """总结 prompt = 承上启下（未完成工作/用户特殊要求/阶段小结），非历史抢救。"""
-    assert "当前未完成的工作" in _SUMMARY_PROMPT
-    assert "承上启下" in _SUMMARY_PROMPT
+    """总结 prompt = 六段式工作交接（OMP handoff 格式裁剪版）。"""
+    for header in ("## 目标", "## 约束与偏好", "## 进展",
+                   "## 关键决策", "## 关键上下文", "## 下一步"):
+        assert header in _SUMMARY_PROMPT, f"缺少段落 {header}"
+    assert "祈使句" in _SUMMARY_PROMPT
     assert "不要调用工具" in _SUMMARY_PROMPT
+    assert "1000 字" in _SUMMARY_PROMPT
+    assert "不要把「写交接/压缩上下文」" in _SUMMARY_PROMPT
+
+
+def test_compression_done_hint_marks_handoff_as_memory():
+    """完成提示必须声明交接是工作记忆、不是用户新指令。"""
+    assert "不是用户新指令" in _COMPRESSION_DONE_HINT
+    assert "不要重复已完成的工作" in _COMPRESSION_DONE_HINT
 
 
 def test_run_summary_llm_calls_chat_with_no_tools():
