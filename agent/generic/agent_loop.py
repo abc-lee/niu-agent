@@ -1109,11 +1109,11 @@ def run_controlled_compression(messages, ctx, client, turn, release_on_failure: 
 
     调用链（回调契约）：agent_runner_loop 门内只调 on_compression_request(messages, turn)
     回调（runner 提供）；runner 的 _on_compression_request 构造 ctx 后调本函数——
-    门不经手 ctx。执行顺序：提炼前置 → 模型承上启下总结（仅内存，不落库）
-    → 机械压实（DB 全量 build_compact_view）→ 压实成功后落库三件套
-    （bypass+skip_mirror，_persist_compression_triplet）→ 消息重组（单元感知：
-    待执行单元最后 + 三件套内存追加）。各步进度通知经 notify_compact_status_sync
-    （本函数同步不能 yield）。
+    门不经手 ctx。执行顺序：模型承上启下总结（仅内存，不落库）→ 机械压实
+    （DB 全量 build_compact_view）→ 三件套落库（bypass+skip_mirror，
+    _persist_compression_triplet）→ 消息重组（单元感知：待执行单元最后 +
+    三件套内存追加）；F1 提炼已移出关键路径，由睡眠管道后置完成。
+    各步进度通知经 notify_compact_status_sync（本函数同步不能 yield）。
 
     闩锁语义（R6-A P2-1 滞回 + FinalReview B-P3-1 条件化）：失败/早退出口按
     release_on_failure 条件解闩——仅当调用方本轮确实 try_acquire 过才 release
@@ -1126,7 +1126,7 @@ def run_controlled_compression(messages, ctx, client, turn, release_on_failure: 
         ctx: 压缩上下文鸭子对象（R1-B P1-2 修订，非 NiuHandler）——须含
             _sync_get_messages() / _sync_add_message(...) / _llm_config / _store
         client: LLM client（总结调用用）
-        turn: 当前轮号（进度日志/冷却）
+        turn: 当前轮号（进度日志）
         release_on_failure: 失败/早退时是否解闩（B-P3-1：门传本轮 gate_acquired；
             闲时直调自己 try_acquire 过 → True）。默认 True 兼容既有直接调用方。
 
@@ -1142,19 +1142,9 @@ def run_controlled_compression(messages, ctx, client, turn, release_on_failure: 
         if release_on_failure:
             _gate_release()
 
-    # 步骤 1：提炼前置（硬约束——提炼未完不压实）
-    if _extract_cooldown_active():
-        logger.warning(f"[Compression] 提炼失败冷却期，跳过本轮压缩")
-        _release_if_acquired()
-        return messages, False
+    # 步骤 1：F1 提炼前置已移出压缩关键路径（提炼后置，由睡眠管道从 F1/DB 补做）。
+    # 压缩一律立即执行：不读冷却、不等提炼——不压实会直接冒上下文溢出风险。
     _notify_compact_progress("started", mode="auto")
-    extracted_ok = _extract_f1_before_compress(messages, ctx)
-    if not extracted_ok:
-        logger.warning("[Compression] F1 提炼未完成，本轮跳过压缩（防未提炼内容出窗丢失）")
-        _mark_extract_failed()
-        _release_if_acquired()
-        _notify_compact_progress("done", mode="auto")  # 终态必推，防前端圆环卡死
-        return messages, False
     # 步骤 2：模型承上启下总结（仅内存——三件套落库统一在压实成功后，spec 3.2）
     summary_text = ""
     try:
@@ -1676,54 +1666,33 @@ def agent_runner_loop(
                 except Exception:
                     gate_acquired = True
             if gate_hit:
-                # R4-A P1-1 + R5-A P0-1 + R7 修订：提炼冷却期（manual 或 auto）——
-                # 不执行压缩，落回正常发送；**绝不 continue**（空转杀长任务）。
-                # R9-A P3-1：auto 冷却也显式 defer 提示，不 yield"正在整理"误导。
-                if _extract_cooldown_active():
-                    if had_intent and _reason == "manual":
-                        logger.warning("[Compression] manual intent during extract cooldown, deferring")
-                        request_compression("manual")  # 重新置位（下轮冷却过再执行）
-                    else:
-                        logger.warning("[Compression] auto compaction during extract cooldown, deferred")
-                    yield StreamEvent("system", "内容提炼冷却中，压缩将在可执行时自动进行…")
-                    gate_hit = False  # 落回正常发送
-                    _gate_release_if_acquired(gate_acquired)  # 释放本轮闩锁
-                if gate_hit:
-                    logger.info(f"[Compression] Pre-send gate: intent={had_intent}({_reason}) ratio={ratio}")
-                    yield StreamEvent("system", "正在整理上下文，请稍候…")
+                # 压缩一律立即执行（不读冷却、不等提炼）：不压实会直接冒上下文溢出风险。
+                logger.info(f"[Compression] Pre-send gate: intent={had_intent}({_reason}) ratio={ratio}")
+                yield StreamEvent("system", "正在整理上下文，请稍候…")
+                try:
+                    # B-P3-1：传本轮 gate_acquired——回调链透传给 run_controlled_compression
+                    # 的 release_on_failure（失败出口仅当本轮 acquire 过才解闩）
+                    messages, _compacted = on_compression_request(messages, turn, gate_acquired)
+                except Exception:
+                    # P2a：回调异常防护——logger.exception + 解闩防闩锁滞留，继续落回原发送
+                    logger.exception("[AgentLoop] on_compression_request callback failed")
+                    _gate_release_if_acquired(gate_acquired)
+                    _compacted = False
+                # R5-A P2-2：压缩整体替换丢弃当轮动态块 → 重跑 on_before_llm 幂等重插
+                if _compacted and on_before_llm is not None:
                     try:
-                        # B-P3-1：传本轮 gate_acquired——回调链透传给 run_controlled_compression
-                        # 的 release_on_failure（失败出口仅当本轮 acquire 过才解闩）
-                        messages, _compacted = on_compression_request(messages, turn, gate_acquired)
+                        on_before_llm(messages, turn)
                     except Exception:
-                        # P2a：回调异常防护（贴 on_before_llm 风格）——logger.exception +
-                        # 解闩防闩锁滞留，继续落回原发送（不炸生成器、无 chat_idle 丢失）；
-                        # _compacted=False 落入下方"未完成"分支（manual 重设/auto 记 warning）
-                        logger.exception("[AgentLoop] on_compression_request callback failed")
-                        _gate_release_if_acquired(gate_acquired)  # 失败解闩防闩锁滞留
-                        _compacted = False
-                    # R5-A P2-2：压缩整体替换丢弃当轮动态块 → 重跑 on_before_llm 幂等重插
-                    if _compacted and on_before_llm is not None:
-                        try:
-                            on_before_llm(messages, turn)
-                        except Exception:
-                            logger.exception("[AgentLoop] on_before_llm re-run after compression failed")
-                    # R5-A P2-1 + quality 微修：压缩未完成（manual/auto/回调异常）→ 一律解闩
-                    # 防进程级永久失效；manual 重设意图 + 告知（用户显式请求不丢），
-                    # auto 不重设（下轮 ratio_hit 再试——ratio 未回落则 gate_acquired 重新置闩）
-                    if not _compacted:
-                        if had_intent and _reason == "manual":
-                            logger.warning("[Compression] manual compression did not complete, re-requesting")
-                            request_compression("manual")
-                            yield StreamEvent("system", "压缩未完成（提炼冷却或失败），将自动重试")
-                        else:
-                            # P1：auto 达线但压实失败（如提炼未完）——不重设意图，下轮 ratio_hit 再试；
-                            # 必须解闩防闩锁滞留导致本 loop 后续永久失效
-                            logger.warning("[Compression] auto compression did not complete, releasing gate for next-round retry")
-                        _gate_release_if_acquired(gate_acquired)  # 失败解闩防卡死（幂等）
-                    # R2-A P1-2：压缩成功不置冷却（AUTO_GATE 滞回 +
-                    # 压后估算回落天然防风暴）；滞回 release 由 run_controlled_compression
-                    # 压后估算回落决定（成功保持闩锁直至回落）
+                        logger.exception("[AgentLoop] on_before_llm re-run after compression failed")
+                # R5-A P2-1：压缩未完成 → 一律解闩防永久失效；manual 重设意图 + 告知
+                if not _compacted:
+                    if had_intent and _reason == "manual":
+                        logger.warning("[Compression] manual compression did not complete, re-requesting")
+                        request_compression("manual")
+                        yield StreamEvent("system", "压缩未完成（压实失败），将自动重试")
+                    else:
+                        logger.warning("[Compression] auto compression did not complete, releasing gate for next-round retry")
+                    _gate_release_if_acquired(gate_acquired)
         response_gen = client.chat(messages=messages, tools=tools_schema)
         if verbose:
             response = yield from response_gen

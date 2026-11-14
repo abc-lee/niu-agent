@@ -177,9 +177,9 @@ def test_stopped_exit_clears_unconsumed_manual_intent():
     assert peek_compression() is False, "异常退出必须清未消费意图（防下会话首轮意外压缩）"
 
 
-def test_normal_exit_keeps_unconsumed_manual_intent():
-    """FinalReview B-P2-1 语义对侧：正常收尾不清意图——manual 冷却 defer 重设后任务
-    自然完成 → 意图顺延到下一条消息首轮门（用户按了 /compact 就该压，"任务间隙执行"）。"""
+def test_manual_intent_executes_immediately():
+    """manual 意图不再受冷却 defer：达线/手动均立即执行压缩 → 回调被调一次、
+    client.chat 落回正常发送、意图已被消费（不残留到下一条消息首轮门）。"""
     reset_compression_intent()
 
     def _fake_chat(messages, tools=None):
@@ -193,15 +193,14 @@ def test_normal_exit_keeps_unconsumed_manual_intent():
     cb_calls = []
     request_compression("manual")
     try:
-        with patch("agent.generic.agent_loop._estimate_usage_ratio", return_value=0.9), \
-             patch("agent.generic.agent_loop._extract_cooldown_active", return_value=True):
+        with patch("agent.generic.agent_loop._estimate_usage_ratio", return_value=0.9):
             captured, result = _run_loop_with(
                 client,
                 on_compression_request=lambda m, t, g=True: (cb_calls.append(t), (m, True))[1],
             )
-        assert cb_calls == []  # 冷却期不执行压缩（defer）
-        assert len(captured) == 1  # defer 后落回正常发送
+        assert cb_calls == [1], "manual 意图应立刻执行压缩"
+        assert len(captured) == 1
         assert result["result"] in ("CURRENT_TASK_DONE", "MAX_TURNS_EXCEEDED")
-        assert peek_compression() is True, "正常出口不清意图——顺延到下一条消息首轮门（设计内）"
+        assert peek_compression() is False, "压缩执行后意图应已被消费"
     finally:
-        reset_compression_intent()  # 卫生：本用例断言的就是残留意图，必须清防污染后续文件
+        reset_compression_intent()  # 卫生：清残留意图防污染后续文件

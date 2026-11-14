@@ -397,16 +397,15 @@ def test_rebuild_has_no_standalone_summary_if_block():
     )
 
 
-def test_failure_no_release_when_not_acquired():
-    """FinalReview B P2-2：失败早退（提炼失败）+ release_on_failure=False →
+def test_db_compact_failure_no_release_when_not_acquired():
+    """FinalReview B P2-2：DB 压实失败 + release_on_failure=False →
     AUTO_GATE.release 不被调——本轮未 acquire 到闩锁（如他轮滞回期），不得误清
     他轮滞回闩锁。对照 test_compact_failure_keeps_original_messages（默认 True 失败解闩）。"""
     ctx = _mk_ctx()
     client = MagicMock()
     orig = [{"role": "system", "content": "sys"}, {"role": "user", "content": "原指令"}]
-    with patch("agent.generic.agent_loop._extract_cooldown_active", return_value=False), \
-         patch("agent.generic.agent_loop._extract_f1_before_compress", return_value=False), \
-         patch("agent.generic.agent_loop._mark_extract_failed"), \
+    with patch("agent.generic.agent_loop._run_summary_llm", return_value=""), \
+         patch("agent.generic.agent_loop._compact_db_view", return_value=(False, {})), \
          patch("agent.context_assembler.compaction.AUTO_GATE") as m_gate:
         new_msgs, did = run_controlled_compression(list(orig), ctx, client, 0, release_on_failure=False)
     assert did is False
@@ -425,3 +424,43 @@ def test_compact_db_view_db_read_failure_returns_false():
     ok, stats = _compact_db_view(ctx)
     assert ok is False
     assert stats == {}
+
+
+def test_compaction_never_calls_entity_extractor(tmp_path):
+    """提炼后置：压缩关键路径不得调用 entity-extractor，且冷却不参与。"""
+    ctx = _mk_ctx()
+    f1 = tmp_path / "F1_extract_source.md"
+    f1.write_text('{"msg_id": "m1", "role": "user"}\n', encoding="utf-8")
+    ctx._f1_path = str(f1)
+    ctx._llm_config = MagicMock()
+    client = MagicMock()
+    orig = [{"role": "system", "content": "sys"}, {"role": "user", "content": "指令"}]
+
+    with patch("niu_api.compat._call_entity_extractor_on_f1") as m_extract, \
+         patch("agent.generic.agent_loop._run_summary_llm", return_value="总结"), \
+         patch("agent.generic.agent_loop._compact_db_view", return_value=(True, {"usage": 0.1})), \
+         patch("agent.generic.agent_loop._persist_compression_triplet"), \
+         patch("agent.generic.agent_loop._rebuild_messages_after_compact",
+               side_effect=lambda m, c, s: m):
+        _, did = run_controlled_compression(list(orig), ctx, client, 0)
+
+    assert did is True
+    m_extract.assert_not_called()
+
+
+def test_compaction_ignores_extract_cooldown(monkeypatch):
+    """冷却期也必须立即压缩（冷却概念已删除）。"""
+    ctx = _mk_ctx()
+    client = MagicMock()
+    orig = [{"role": "user", "content": "指令"}]
+    # 若实现仍引用该符号，patch 会成功并把冷却置为生效；实现删除后 patch 会失败——
+    # 用 raising=False 让两种实现都能跑，断言只看 did。
+    monkeypatch.setattr("agent.generic.agent_loop._extract_cooldown_active",
+                        lambda: True, raising=False)
+    with patch("agent.generic.agent_loop._run_summary_llm", return_value="总结"), \
+         patch("agent.generic.agent_loop._compact_db_view", return_value=(True, {"usage": 0.1})), \
+         patch("agent.generic.agent_loop._persist_compression_triplet"), \
+         patch("agent.generic.agent_loop._rebuild_messages_after_compact",
+               side_effect=lambda m, c, s: m):
+        _, did = run_controlled_compression(list(orig), ctx, client, 0)
+    assert did is True

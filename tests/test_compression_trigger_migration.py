@@ -237,10 +237,9 @@ async def test_assembly_exit_sets_auto_intent(tmp_path, monkeypatch):
 # 6. manual 意图 + 提炼失败冷却期：门 defer（不落空转、意图重设）——行为锁
 # ---------------------------------------------------------------------------
 
-def test_manual_during_extract_cooldown_defers_no_send_loss(monkeypatch):
-    """manual 意图 + _extract_cooldown_active=True → 门 defer（gate_hit=False 落回发送）：
-    on_compression_request 不被调、client.chat 仍发生（绝不 continue 空转杀长任务）、
-    manual 意图被重新置位（consume 后 (True, 'manual')，下轮冷却过再执行）。"""
+def test_manual_intent_executes_immediately_no_send_loss():
+    """manual 意图 → 门立即执行压缩（冷却概念已删除）：
+    on_compression_request 被调一次、client.chat 仍发生、意图被消费（不残留）。"""
     from agent.generic.agent_loop import StepOutcome, agent_runner_loop
     from agent.generic.llmcore import MockResponse
 
@@ -286,9 +285,6 @@ def test_manual_during_extract_cooldown_defers_no_send_loss(monkeypatch):
         cb_calls.append(turn)
         return messages, True
 
-    # 冷却期生效（patch agent_loop 模块内引用的判定函数）
-    monkeypatch.setattr("agent.generic.agent_loop._extract_cooldown_active", lambda: True)
-
     from agent.compression_intent import consume_compression, request_compression
     request_compression("manual")
     try:
@@ -297,11 +293,10 @@ def test_manual_during_extract_cooldown_defers_no_send_loss(monkeypatch):
             handler=handler, tools_schema=[], max_turns=1, verbose=False,
             on_compression_request=_cb,
         ))
-        assert cb_calls == [], "冷却期 manual 压缩不得执行（on_compression_request 不被调）"
-        assert len(chat_count) >= 1, "defer 后必须落回正常发送（绝不 continue 空转杀长任务）"
+        assert cb_calls == [1], "manual 意图应立刻执行压缩"
+        assert len(chat_count) >= 1, "压缩后必须落回正常发送（绝不 continue 空转杀长任务）"
         had, reason = consume_compression()
-        assert (had, reason) == (True, "manual"), \
-            f"manual 意图必须被重新置位（下轮冷却过再执行），实际: {(had, reason)}"
+        assert had is False, "压缩执行后意图已被消费"
     finally:
         # 卫生：清残留意图防污染其他用例
         while consume_compression()[0]:
