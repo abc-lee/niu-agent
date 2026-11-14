@@ -1281,6 +1281,8 @@ def _persist_compression_triplet(ctx, summary_text: str) -> None:
     每行落库成功（拿到 msg_id）后同步推 SSE new_message——三件套走 skip_mirror
     绕开了正常消息那条通知链，此处补回：手工 /compact 闲时压缩不在 run 中途，
     前端没有 persist/轮询兜底，不推就"什么都看不到"（2026-11-14 真机报障）。
+    assistant 行（交接全文）以空 id 推送：非空 id + role=assistant 会被 chat-tts.js
+    判为可朗读回复、把交接文档念出来；渲染由前端 refreshFromDB 按 DB 拉取，不需要 id。
     """
     _rows = _triplet_messages(summary_text)
     for i, m in enumerate(_rows):
@@ -1303,7 +1305,12 @@ def _persist_compression_triplet(ctx, summary_text: str) -> None:
             continue  # 未落库 → 无可推的消息
         try:
             from niu_api.chat import notify_new_message_sync
-            notify_new_message_sync(_res, m["role"], m["content"], source="electron")
+            if m["role"] == "assistant":
+                # 空 id：渲染走 refreshFromDB（DB 为准）；role=assistant+非空 id 会被
+                # chat-tts.js 判为可朗读回复，把交接全文念出来
+                notify_new_message_sync("", m["role"], m["content"], source="electron")
+            else:
+                notify_new_message_sync(_res, m["role"], m["content"], source="electron")
         except Exception as e:
             logger.warning(f"[Compression] 三件套第 {i + 1} 行（{m['role']}）SSE 通知失败: {e}")
 

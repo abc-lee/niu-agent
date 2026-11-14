@@ -1917,11 +1917,19 @@ async def chat_session(request: ChatRequest) -> ChatResponse:
         except TimeoutError:
             return ChatResponse(reply="系统正忙，请稍后再试", session_id="default")
         result = ""
+        busy_pushed = False
         try:
             # R4-A P3-1：取锁后复检——若等待期间另一会话抢锁运行、循环已消费 manual
             # 意图并压缩，则本分支不再重复压缩（防重复总结行/分钟级浪费）
             if not peek_compression():
                 return ChatResponse(reply="压缩已在任务间隙执行", session_id="default")
+            # 状态机置忙（复用 agent_loop/runner 已有的 chat_busy/chat_idle 事件对，无新协议、
+            # 不改前端）：闲时压缩不走 agent_runner_loop，前端收不到 busy → 压缩期间无进行中
+            # 反馈。位置在复检之后、DB 装配之前，并用 busy_pushed 记账：早退/装配异常出口
+            # 没有 busy，finally 就不推 idle，避免单向 idle（P3-1）。
+            from niu_api.chat import notify_new_message_sync
+            notify_new_message_sync("", "chat_busy", "", source="electron")
+            busy_pushed = True
             from agent.context_manager import get_context_manager
             store = await get_message_store()
             context_manager = await get_context_manager(store)
@@ -1940,28 +1948,29 @@ async def chat_session(request: ChatRequest) -> ChatResponse:
                 acquired = compaction.AUTO_GATE.try_acquire(compaction.trigger_ratio())
             except Exception:
                 acquired = False  # 置闩失败无害——未持锁，失败出口不得解闩
-            # 状态机置忙（复用 agent_loop/runner 已有的 chat_busy/chat_idle 事件对，无新协议、
-            # 不改前端）：闲时压缩不走 agent_runner_loop，前端收不到 busy → 压缩期间无进行中
-            # 反馈。idle 由 finally 无条件推（成败都推，防状态机卡忙）。
-            from niu_api.chat import notify_new_message_sync
-            notify_new_message_sync("", "chat_busy", "", source="electron")
             result = await asyncio.to_thread(
                 _run_idle_compression, runner, history_for_runner, acquired,
             )
             logger.info(f"[ChatSession] /compact idle compression result: {result}")
         finally:
+            # 状态机回闲：置于 finally 首行——下面 consume/惰性 import/释放任一抛错都不得
+            # 跳过 idle（否则前端永久卡忙，P3-3）；只在真推过 busy 时才推，保证事件成对
+            # （早退/装配异常出口无 busy，P3-1）。全段无 await 点：本协程返回前完成
+            # release，事件循环派发 idle 时锁已释放，"锁已释放可发下一轮"的顺序承诺不破。
+            if busy_pushed:
+                from niu_api.chat import notify_new_message_sync
+                notify_new_message_sync("", "chat_idle", "", source="electron")
             # R3-A P1-1 + R4-B P2-2：consume 清意图放 finally——闲时压缩直接执行不经
             # 门 consume；to_thread 抛 BaseException（CancelledError）也清，防意图泄漏
             # 到下一会话首轮被门消费 → 冗余压缩。
-            consume_compression()
-            from agent.runner import clear_stop, drain_supplement
-            clear_stop()
-            drain_supplement()  # 清理残留补充消息（现名 drain_supplement，R3-B P1-3）
-            _chat_lock.release()
-            # 状态机回闲：置于 release 之后——锁已释放，前端可立即发下一轮，不会被本分支
-            # 残留 busy 覆盖；无论压缩成败（含异常/CancelledError）都推，防卡忙。
-            from niu_api.chat import notify_new_message_sync
-            notify_new_message_sync("", "chat_idle", "", source="electron")
+            # 内层 try/finally：清意图/惰性 import 抛错也不得漏 release（锁泄漏 = 永久忙）。
+            try:
+                consume_compression()
+                from agent.runner import clear_stop, drain_supplement
+                clear_stop()
+                drain_supplement()  # 清理残留补充消息（现名 drain_supplement，R3-B P1-3）
+            finally:
+                _chat_lock.release()
         # R4-A P2-1：按结果分叉文案——skipped/error 不谎报"完成"
         if result == "compacted":
             return ChatResponse(reply="上下文压缩完成", session_id="default")

@@ -115,14 +115,16 @@ def test_persist_compression_triplet_pushes_sse_per_row():
     """每行落库成功后推 SSE new_message（三件套绕开 skip_mirror 的正常通知链，此处补回）。
 
     手工 /compact 闲时压缩不在 run 中途，前端没有 persist/轮询兜底——不推 = 三条全不可见
-    （2026-11-14 真机报障）。角色序 = user/assistant/user，msg_id 逐行透传。
+    （2026-11-14 真机报障）。角色序 = user/assistant/user；assistant 行（交接全文）以
+    **空 id** 推送：非空 id + role=assistant 会被 chat-tts.js 判为可朗读回复（P2-1），
+    渲染由前端 refreshFromDB 从 DB 拉取。
     """
     ctx = MagicMock()
     ctx._sync_add_message = MagicMock(side_effect=["msg-1", "msg-2", "msg-3"])
     with patch("niu_api.chat.notify_new_message_sync") as m_notify:
         _persist_compression_triplet(ctx, "总结文本")
     assert m_notify.call_count == 3
-    assert [c.args[0] for c in m_notify.call_args_list] == ["msg-1", "msg-2", "msg-3"]
+    assert [c.args[0] for c in m_notify.call_args_list] == ["msg-1", "", "msg-3"]
     assert [c.args[1] for c in m_notify.call_args_list] == ["user", "assistant", "user"]
     assert [(c.args[2]) for c in m_notify.call_args_list] == [
         _SUMMARY_PROMPT, "总结文本", _COMPRESSION_DONE_HINT,
@@ -137,7 +139,9 @@ def test_persist_compression_triplet_no_push_when_row_not_written():
     with patch("niu_api.chat.notify_new_message_sync") as m_notify:
         _persist_compression_triplet(ctx, "总结文本")
     assert m_notify.call_count == 2  # 仅成功落库的两行
-    assert [c.args[0] for c in m_notify.call_args_list] == ["msg-2", "msg-3"]
+    assert [c.args[1] for c in m_notify.call_args_list] == ["assistant", "user"]
+    # assistant 行（此处 msg-2）恒空 id，user 行透传真实 id
+    assert [c.args[0] for c in m_notify.call_args_list] == ["", "msg-3"]
 
 
 def test_triplet_prefix_parity():

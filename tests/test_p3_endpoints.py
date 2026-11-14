@@ -15,10 +15,13 @@
    且**不提交命令**；只有 pending（`is_busy()` 真、`is_round_active()` 假）⇒ 走正常 FIFO 提交。
 5. **gateway snapshot**（D-6）：compat 把 on_complete 锁内快照（should_push_im /
    im_channel_id）交给 `push_im_reply`，wait 之后不再现读 runner 标志。
+6. **手工 `/compact` 状态机事件配对**（P3-1/P3-2/P3-3）：早退出口（复检无意图）零推送；
+   正常路径先 `chat_busy` 后 `chat_idle`（空 id、成对有序），压缩执行透传置闩结果。
 
 全 mock：`FakeRuntime` / 手写 runtime 替身 + `main_loop_thread()` + 假 store / 假 persist ——
 禁真实 LLM、禁真实 messages.db、禁真实 ~/.niu。
 """
+import asyncio
 import json
 import threading
 from types import SimpleNamespace
@@ -503,3 +506,86 @@ async def test_compat_passes_holder_snapshot_to_push_im_reply(monkeypatch):
     assert snapshot["should_push_im"] is True
     assert snapshot["im_channel_id"] == "oc_snap"
     assert resp.reply == "回复"
+
+
+# ---------------------------------------------------------------------------
+# 6. 手工 /compact 状态机事件配对（P3-1 / P3-2 / P3-3）
+# ---------------------------------------------------------------------------
+
+
+def _patch_compact_env(monkeypatch, *, peek: bool) -> list[tuple[str, str, str]]:
+    """闲时 /compact 环境：只打桩意图门/状态机推送/压缩执行，返回 new_message 推送序。
+
+    `/compact` 分支本身保持真实执行——早退与正常路径两个出口的 busy/idle 配对被真正覆盖。
+    """
+    pushes: list[tuple[str, str, str]] = []
+
+    def fake_notify(message_id, role, content, *, source=""):
+        pushes.append((message_id, role, content))
+        return True
+
+    monkeypatch.setattr("niu_api.chat.notify_new_message_sync", fake_notify)
+    monkeypatch.setattr(compat_mod, "request_compression", lambda reason: None)
+    monkeypatch.setattr(compat_mod, "consume_compression", lambda: (True, "manual"))
+    monkeypatch.setattr(compat_mod, "peek_compression", lambda: peek)
+    monkeypatch.setattr(compat_mod, "_chat_lock", asyncio.Lock())
+    # finally 里的惰性 import 目标：真实现会动全局停止闩/补充队列，用例里必须隔离
+    monkeypatch.setattr("agent.runner.clear_stop", lambda: None)
+    monkeypatch.setattr("agent.runner.drain_supplement", lambda: None)
+    return pushes
+
+
+async def test_compact_idle_early_return_pushes_neither_busy_nor_idle(monkeypatch):
+    """P3-1/P3-2：取锁后复检无意图（他轮已压缩）⇒ 早退出口零状态机推送。
+
+    退化捕获：idle 改回无条件推送、或 busy 挪到复检之前，本用例立即红。
+    """
+    pushes = _patch_compact_env(monkeypatch, peek=False)
+
+    resp = await compat_mod.chat_session(
+        compat_mod.ChatRequest(message="/compact", session_id="default", source="electron")
+    )
+
+    assert resp.reply == "压缩已在任务间隙执行"
+    assert pushes == [], f"早退出口不得推任何事件（单向 idle 会误导状态机）：{pushes!r}"
+
+
+async def test_compact_idle_normal_path_pushes_busy_then_idle(monkeypatch):
+    """P3-2：正常闲时压缩 ⇒ 先 chat_busy 后 chat_idle（空 id、成对有序）。
+
+    退化捕获：删掉 finally 的 idle（前端永久卡忙）或把 busy 挪到压缩执行之后
+    （压缩期间无进行中反馈）都会让本用例红。
+    """
+    pushes = _patch_compact_env(monkeypatch, peek=True)
+    store = MagicMock()
+    store.get_messages = AsyncMock(return_value=[])
+    monkeypatch.setattr("niu_api.compat.get_message_store", AsyncMock(return_value=store))
+    context_manager = MagicMock()
+    context_manager.get_context_for_chat = AsyncMock(return_value=[])
+    monkeypatch.setattr(
+        "agent.context_manager.get_context_manager", AsyncMock(return_value=context_manager)
+    )
+    monkeypatch.setattr("niu_api.chat.get_or_create_runner", lambda: MagicMock())
+    # 进程级闸门单例不得被用例污染；trigger_ratio 会读真实配置 → 一并打桩
+    monkeypatch.setattr("agent.context_assembler.compaction.trigger_ratio", lambda: 0.8)
+    monkeypatch.setattr(
+        "agent.context_assembler.compaction.AUTO_GATE",
+        SimpleNamespace(try_acquire=lambda ratio: True),
+    )
+    ran: list[tuple] = []
+
+    def fake_idle_compression(runner, history, gate_acquired):
+        ran.append((runner, tuple(history), gate_acquired))
+        return "compacted"
+
+    monkeypatch.setattr(compat_mod, "_run_idle_compression", fake_idle_compression)
+
+    resp = await compat_mod.chat_session(
+        compat_mod.ChatRequest(message="/compact", session_id="default", source="electron")
+    )
+
+    assert resp.reply == "上下文压缩完成"
+    assert len(ran) == 1 and ran[0][2] is True, "压缩执行必须透传置闩结果"
+    assert [(role, mid) for mid, role, _ in pushes] == [
+        ("chat_busy", ""), ("chat_idle", ""),
+    ], f"状态机事件必须成对且有序：{pushes!r}"
