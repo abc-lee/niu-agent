@@ -1940,6 +1940,11 @@ async def chat_session(request: ChatRequest) -> ChatResponse:
                 acquired = compaction.AUTO_GATE.try_acquire(compaction.trigger_ratio())
             except Exception:
                 acquired = False  # 置闩失败无害——未持锁，失败出口不得解闩
+            # 状态机置忙（复用 agent_loop/runner 已有的 chat_busy/chat_idle 事件对，无新协议、
+            # 不改前端）：闲时压缩不走 agent_runner_loop，前端收不到 busy → 压缩期间无进行中
+            # 反馈。idle 由 finally 无条件推（成败都推，防状态机卡忙）。
+            from niu_api.chat import notify_new_message_sync
+            notify_new_message_sync("", "chat_busy", "", source="electron")
             result = await asyncio.to_thread(
                 _run_idle_compression, runner, history_for_runner, acquired,
             )
@@ -1953,6 +1958,10 @@ async def chat_session(request: ChatRequest) -> ChatResponse:
             clear_stop()
             drain_supplement()  # 清理残留补充消息（现名 drain_supplement，R3-B P1-3）
             _chat_lock.release()
+            # 状态机回闲：置于 release 之后——锁已释放，前端可立即发下一轮，不会被本分支
+            # 残留 busy 覆盖；无论压缩成败（含异常/CancelledError）都推，防卡忙。
+            from niu_api.chat import notify_new_message_sync
+            notify_new_message_sync("", "chat_idle", "", source="electron")
         # R4-A P2-1：按结果分叉文案——skipped/error 不谎报"完成"
         if result == "compacted":
             return ChatResponse(reply="上下文压缩完成", session_id="default")

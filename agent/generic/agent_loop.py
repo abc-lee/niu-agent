@@ -1277,6 +1277,10 @@ def _persist_compression_triplet(ctx, summary_text: str) -> None:
     各行独立：单行返回 None（写失败）→ warning 累积，不阻断后续行；完成行（最后
     一条）失败提级显著 warning（P2-3：本轮可见性由重组无条件内存追加天然满足，
     不做条件化——DB 缺完成行仅影响下轮组装，罕见 DB 故障可接受）。
+
+    每行落库成功（拿到 msg_id）后同步推 SSE new_message——三件套走 skip_mirror
+    绕开了正常消息那条通知链，此处补回：手工 /compact 闲时压缩不在 run 中途，
+    前端没有 persist/轮询兜底，不推就"什么都看不到"（2026-11-14 真机报障）。
     """
     _rows = _triplet_messages(summary_text)
     for i, m in enumerate(_rows):
@@ -1296,6 +1300,12 @@ def _persist_compression_triplet(ctx, summary_text: str) -> None:
                 )
             else:
                 logger.warning(f"[Compression] 三件套落库第 {i + 1} 行（{m['role']}）返回 None（写失败），继续后续行")
+            continue  # 未落库 → 无可推的消息
+        try:
+            from niu_api.chat import notify_new_message_sync
+            notify_new_message_sync(_res, m["role"], m["content"], source="electron")
+        except Exception as e:
+            logger.warning(f"[Compression] 三件套第 {i + 1} 行（{m['role']}）SSE 通知失败: {e}")
 
 
 def _persist_summary_without_extract(ctx, summary_text: str) -> str | None:
