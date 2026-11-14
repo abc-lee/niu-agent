@@ -117,6 +117,28 @@ class TestHysteresisGate:
 
 
 class TestCompactView:
+    def test_archive_does_not_collect_entities(self, ratio_one, tmp_path):
+        """压缩归档不查向量库：实体一律留空，交给睡眠末尾 backfill 补。
+
+        归档发生在提炼之前，此刻图里的实体可能是旧的/错的；backfill 只补空块，
+        非空不会重算 → 错标签永久残留。故压缩必须传 collect_entities=False。
+        """
+        from unittest.mock import patch
+
+        messages = []
+        for i in range(5):
+            messages.extend(plain_unit(i, i * 10))
+        db = tmp_path / "b.db"
+        with patch("agent.context_assembler.entity_tags.collect_tags") as m_tags:
+            build_compact_view(
+                messages, system_msg=None, keep_turns=3,
+                blocks_db_path=db, context_window_tokens=CW,
+            )
+        m_tags.assert_not_called()
+        blocks = compaction.load_all(db)
+        assert blocks, "应至少归档 1 块"
+        assert all(b.entities == [] for b in blocks), "压缩归档的块实体必须为空"
+
     def test_write_back_shape_and_water_level_drop(self, ratio_one, tmp_path):
         # 5 个单元全量进视图 vs 压实后只留最近 3 轮 + 索引
         messages = []

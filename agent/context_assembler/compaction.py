@@ -126,8 +126,10 @@ def archive_excluded_units(messages, units, window_start: int,
     幂等：同 (start_msg_id, end_msg_id) 区间的块已存在则跳过。
 
     实体标签按块时间范围反查知识图谱（Task 4 接通，entity_tags.collect_tags）；
-    失败降级为空标签，绝不阻塞归档。collect_entities=False 用于启动段整库重建
-    （integrity）——此时 LightRAG 尚未 eager init，反查会触发阻塞式懒初始化。
+    失败降级为空标签，绝不阻塞归档。collect_entities=False 用于两处：① 启动段整库重建
+    （integrity）——此时 LightRAG 尚未 eager init，反查会触发阻塞式懒初始化；② 压缩归档
+    （build_compact_view）——归档发生在提炼之前，图里的实体可能是旧的/错的，且 backfill
+    只补空块不会重算，故压缩归档一律留空，统一由睡眠末尾 backfill 补齐。
     """
     p = Path(db_path) if db_path is not None else default_db_path()
     archived = load_all(p)
@@ -459,7 +461,12 @@ def build_compact_view(messages, *, system_msg: dict | None = None,
     archived_count = 0
     window_start = units[n_units - keep][0] if n_units else 0
     if n_units:
-        archived_count = archive_excluded_units(messages, units, window_start, db_path)
+        # collect_entities=False：压缩归档不查向量库。归档发生在提炼之前，此刻图里可能
+        # 还没有该日实体，查出来的标签是旧的/错的；且 backfill 只补空块，非空不会被重算
+        # → 错标签永久残留。实体统一由睡眠末尾 backfill 从提炼后的图补齐。
+        archived_count = archive_excluded_units(
+            messages, units, window_start, db_path, collect_entities=False,
+        )
 
     # 窗口内工具行 rowid 集（T2 压实重建可见集）：取最终窗口起点之后的真源消息行
     window_rowids = _window_tool_rowids(messages, window_start) if n_units else set()
