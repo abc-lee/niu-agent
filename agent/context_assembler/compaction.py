@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import threading
+from collections.abc import Callable
 from pathlib import Path
 
 from loguru import logger
@@ -252,6 +253,61 @@ def render_index_grouped(blocks: list[PointerBlock], budget_tokens: int,
         groups = [merged] + groups[2:]
         text = render(groups)
     return text
+
+
+# ---------------------------------------------------------------------------
+# 归档块实体标签补齐（提炼后置的补偿）
+# ---------------------------------------------------------------------------
+
+def backfill_block_entities(
+    db_path: Path | None = None,
+    should_continue: Callable[[], bool] | None = None,
+) -> int:
+    """给 entities 为空的指针块补实体标签（提炼后置完成后的补偿）。
+
+    - 不设数量上限：逐块处理，每块前调一次 should_continue()（睡眠管道传 is_sleeping），
+      返回 False 立即停止；已写入的块保留，下次睡眠从未补的块继续（幂等）。
+    - 图快照/实体向量只取一次，逐块复用；collect_tags 失败/空标签 → 不写、不覆盖已有。
+    返回本次被补标签的块数。
+    """
+    from agent.context_assembler import entity_tags
+
+    p = Path(db_path) if db_path is not None else default_db_path()
+    empty = [b for b in load_all(p) if not b.entities]
+    if not empty:
+        return 0
+    cont = should_continue or (lambda: True)
+    snapshot = entity_tags._graph_snapshot()
+    if snapshot is None:
+        # 图取不到 → 本轮直接 0，绝不逐块重取（降级轮会退化成 N 次全图拷贝）
+        logger.debug("[Compaction] backfill skipped: graph snapshot unavailable")
+        return 0
+    try:
+        ent_vecs = entity_tags._vdb_snapshot()
+    except Exception as e:  # 防御：_vdb_snapshot 已自吞异常，留此兼容未来改动
+        logger.debug(f"[Compaction] backfill: vdb snapshot unavailable: {e}")
+        ent_vecs = None
+    if ent_vecs is None:
+        # 传空 dict（= 已提供但不可用）→ collect_tags 走纯时间链，不逐块重取 vdb 快照
+        ent_vecs = {}
+
+    updated = 0
+    for b in empty:
+        if not cont():
+            break
+        try:
+            tags = entity_tags.collect_tags(
+                [(b.time_start, b.time_end)], [b.first_user],
+                snapshot=snapshot, ent_vecs=ent_vecs,
+            )[0]
+        except Exception as e:
+            logger.debug(f"[Compaction] backfill tags degraded for block {b.id}: {e}")
+            continue
+        if tags:
+            b.entities = list(tags)
+            if upsert_blocks([b], p):   # DB 损坏时返回 0，不虚报 backfilled 数
+                updated += 1
+    return updated
 
 
 # ---------------------------------------------------------------------------

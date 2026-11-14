@@ -71,6 +71,39 @@ def _graph_snapshot():
         return None
 
 
+def _vdb_snapshot() -> dict[str, object] | None:
+    """实体名 → 向量 映射（LightRAG entities_vdb 内部存储快照）；不可用返回 None。
+
+    函数内 import（与 _semantic_tags 原实现同款），不把 lightrag_manager 提到模块顶部。
+    """
+    try:
+        from niu_api.internal.lightrag_manager import call_async, get_lightrag
+
+        async def _get_vdb_snapshot():
+            rag = get_lightrag()
+            if rag is None:
+                return None
+            vdb = getattr(rag, "entities_vdb", None)
+            if vdb is None:
+                return None
+            client = await vdb._get_client()
+            storage = client._NanoVectorDB__storage or {}
+            data = storage.get("data") or []
+            matrix = storage.get("matrix")
+            if matrix is None or len(data) != len(matrix):
+                return None
+            mapping: dict[str, object] = {}
+            for i, row in enumerate(data):
+                name = row.get("entity_name") if isinstance(row, dict) else None
+                if name and name not in mapping:
+                    mapping[name] = matrix[i]
+            return mapping or None
+
+        return call_async(_get_vdb_snapshot(), timeout=5)
+    except Exception as e:
+        logger.debug(f"[EntityTags] vdb snapshot unavailable: {e}")
+        return None
+
 
 def tags_for_range(snapshot, time_start: str, time_end: str) -> list[str]:
     """单个块时间范围内的实体标签（≤3 个）。snapshot 为 None 返回 []。
@@ -138,7 +171,8 @@ def _candidate_pool(snapshot, time_start: str, time_end: str) -> dict[str, float
 
 
 def _semantic_tags(snapshot, time_ranges: list[tuple[str, str]],
-                   first_users: list[str]) -> list[list[str]]:
+                   first_users: list[str],
+                   ent_vecs: dict[str, object] | None = None) -> list[list[str]]:
     """语义段（spec §3.2/§3.4）：时间链候选池内按「块首问向量·实体向量」
     相似度降序 top3；命中 <3 时按时间链权重序剔除已选实体补齐至 3。
 
@@ -162,31 +196,10 @@ def _semantic_tags(snapshot, time_ranges: list[tuple[str, str]],
             return _fallback()
         vectors = batch_encode([fu for _, fu in valid])
 
-        # name→vector 映射在 lightrag loop 协程内构建（与写方同线程串行，天然原子）；
-        # 读 data/matrix 期间不插入 await；data/matrix 长度不一致 → 防御性放弃语义段
-        from niu_api.internal.lightrag_manager import call_async, get_lightrag
-
-        async def _get_vdb_snapshot() -> dict[str, object] | None:
-            rag = get_lightrag()
-            if rag is None:
-                return None
-            vdb = getattr(rag, "entities_vdb", None)
-            if vdb is None:
-                return None
-            client = await vdb._get_client()
-            storage = client._NanoVectorDB__storage or {}
-            data = storage.get("data") or []
-            matrix = storage.get("matrix")
-            if matrix is None or len(data) != len(matrix):
-                return None
-            mapping: dict[str, object] = {}
-            for i, row in enumerate(data):
-                name = row.get("entity_name") if isinstance(row, dict) else None
-                if name and name not in mapping:
-                    mapping[name] = matrix[i]
-            return mapping or None
-
-        ent_vecs = call_async(_get_vdb_snapshot(), timeout=5)
+        # name→vector 映射取自共享快照（_vdb_snapshot：lightrag loop 协程内构建，
+        # 与写方同线程串行，天然原子；读 data/matrix 期间不插入 await；长度不一致
+        # 等异常已在快照层防御性放弃）。ent_vecs 入参非 None 时复用（补标签批量路径）。
+        ent_vecs = ent_vecs if ent_vecs is not None else _vdb_snapshot()
         if not ent_vecs:
             return _fallback()
 
@@ -229,17 +242,19 @@ def _semantic_tags(snapshot, time_ranges: list[tuple[str, str]],
 
 
 def collect_tags(time_ranges: list[tuple[str, str]],
-                 first_users: list[str] | None = None) -> list[list[str]]:
+                 first_users: list[str] | None = None, *,
+                 snapshot=None, ent_vecs: dict[str, object] | None = None) -> list[list[str]]:
     """批量反查：一次快照服务全部新块。返回与入参等长的标签列表，永不抛出。
 
     first_users=None → 纯时间链路径（现行行为逐字节保持）；提供且与 time_ranges
     等长 → 语义段（时间链候选池 + 首问向量排序，见 _semantic_tags）；长度不匹配
-    → logger.warning + 全批时间链 top3。
+    → logger.warning + 全批时间链 top3。snapshot/ent_vecs 非 None 时复用调用方
+    已取的快照（补标签批量路径只取一次图快照与实体向量）。
     """
     if not time_ranges:
         return []
     try:
-        snapshot = _graph_snapshot()
+        snapshot = snapshot if snapshot is not None else _graph_snapshot()
         if snapshot is None:
             return [[] for _ in time_ranges]
         if first_users is None or len(first_users) != len(time_ranges):
@@ -250,7 +265,7 @@ def collect_tags(time_ranges: list[tuple[str, str]],
                     "degrading to time-chain tags"
                 )
             return [tags_for_range(snapshot, t0, t1) for t0, t1 in time_ranges]
-        return _semantic_tags(snapshot, time_ranges, first_users)
+        return _semantic_tags(snapshot, time_ranges, first_users, ent_vecs=ent_vecs)
     except Exception as e:
         logger.debug(f"[EntityTags] collect failed, degrading to empty tags: {e}")
         return [[] for _ in time_ranges]

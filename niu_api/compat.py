@@ -2624,6 +2624,20 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
             # 补全会话日期链（循环退出后一次收尾全覆盖；幂等图补边扫描，方法内部已容错）
             await asyncio.to_thread(runner._ensure_session_chain)
 
+            # 归档块实体标签补齐（幂等：只补 entities 为空的块）。dream 段已跑完
+            # （日期链实体由 dream 建立），_ensure_session_chain 只补边不建实体，
+            # 此时查图才有邻居。逐块轮询 is_sleeping：用户一唤醒就停，已补的块
+            # 保留，下次睡眠继续。
+            try:
+                from agent.context_assembler.compaction import backfill_block_entities
+                n = await asyncio.to_thread(
+                    backfill_block_entities, None, is_sleeping,
+                )
+                if n:
+                    logger.info(f"[Tidy] block entity tags backfilled: {n}")
+            except Exception as e:
+                logger.warning(f"[Tidy] block entity backfill skipped: {e}")
+
             # CP2：dream 循环完成后——纯中断检查；F2 前缀删除已执行不回滚，下次续跑
             if not is_sleeping():
                 logger.warning("[Tidy] Sleep interrupted after dream-evolver (woke up)")
