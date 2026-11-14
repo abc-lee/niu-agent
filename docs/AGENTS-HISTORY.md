@@ -19,6 +19,10 @@
 - **验证**：10 个点名测试文件 **128 passed**（含新增 6 条补标签用例、六段式断言、符号删除断言）；`_vdb_snapshot` 惰性 import 保住了 `test_entity_tags_semantic` 的 patch。真机验证待用户重启后执行（`/compact` 数秒完成、无 entity-extractor 调用；睡眠后出现 `[Tidy] block entity tags backfilled: N`）。
 - **已知残余（风险表 R2/R8/R9/R10）**：F1 积压仍是一次读完、溢出零进度（分批提炼另立计划）；补标签每轮全扫空块、无「已尝试」标记；压实仍受图快照 `nx_graph.copy()` 读锁影响；backfill 与 `/new`/integrity 有毫秒级并发窗口（由 integrity 自愈）。
 - **审查**：plan `docs/superpowers/plans/2026-11-14-defer-f1-extraction-after-compaction.md` v5（双审 4 轮，A4/B4 零 P0/P1/P2；第 5 轮仅确认 P3 文本修正）。
+- **真机报障后的两处修正（2026-11-14 晚）**：
+  1. **压缩归档不再查向量库**（`d5564e40`）：`build_compact_view` 归档改传 `collect_entities=False`。归档发生在提炼之前，图里实体可能是旧的/错的；而 backfill 只补空块、非空不重算 → 错标签永久残留。现在压缩归档块实体一律留空，唯一来源 = 睡眠末尾 backfill（提炼后的图）。
+  2. **手工压缩可见性**（`a960a8cd` + `21ef269c`）：三件套落库后补推 SSE `notify_new_message_sync`（此前 `_sync_add_message` 只写库不推，前端看不到）；assistant 交接行用空 id 推送（避开 TTS 朗读全文）；compat 闲时 `/compact` 复用 `chat_busy`/`chat_idle` 事件对（`busy_pushed` 配对、idle 在 finally 首行、内层 try/finally 防锁泄漏）。自动路径保持静默。
+  3. **已知边界**：修复前已写入的旧标签（如块 1223-1225）不会被重算；如需纠正，可加一次性 force 重算（覆盖现有标签）。
 
 ---
 
