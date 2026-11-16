@@ -8,7 +8,9 @@ TDD：先写覆盖所有可能性的失败测试，再改代码修复。
 - json_schema / json_object 两种 response_format
 - max_tokens 截断场景
 
-所有场景期望：≤120s 返回（不卡死），结果合法（supported/probe_failed 之一）。
+所有场景期望：≤120s 返回（不卡死），结果合法。端点新不变量：连通性由
+/api/test-llm 证明后，任何探测错误一律 supported + prompt_only，不阻断保存
+（仅配置无法构造时返回 probe_failed）。
 
 真实 LLM 调用，需要网络。两个配置文件（默认落在临时测试目录，缺失即 skip）：
 - <临时目录>/niu-test/config/user-config.json（豆包 ark-code-latest）
@@ -193,8 +195,7 @@ async def _call_probe_direct(config: dict) -> dict:
     if tier1_result == "supported":
         return {"result": "supported", "mode": "json_schema", "reason": "Tier 1 通过"}
 
-    if tier1_result in ("rate_limited", "infra_error"):
-        return {"result": "probe_failed", "reason": f"Tier 1 {tier1_result}", "mode": None}
+    # Tier 1 任何不通过都继续降级（限流/超时/基础设施一律不阻断，端点新不变量）
 
     # Tier 2: json_object
     tier2_result, tier2_raw = await _probe_tier_three_samples_async(
@@ -208,8 +209,7 @@ async def _call_probe_direct(config: dict) -> dict:
     if tier2_result == "supported":
         return {"result": "supported", "mode": "json_object", "reason": "Tier 2 通过"}
 
-    if tier2_result in ("rate_limited", "infra_error"):
-        return {"result": "probe_failed", "reason": f"Tier 2 {tier2_result}", "mode": None}
+    # Tier 2 同样降级到底：统一 supported + prompt_only（连通性已由 test-llm 证明）
 
     return {"result": "supported", "mode": "prompt_only", "reason": "降级保底"}
 
@@ -238,7 +238,7 @@ async def _run_probe_with_timeout(config: dict) -> tuple[dict, float]:
 async def test_doubao_volcengine_provider_thinking_disabled():
     """场景 1：豆包 + volcengine provider + thinking:disabled + json_schema。
 
-    期望：≤120s 返回，result 合法（supported/probe_failed 之一），不卡死。
+    期望：≤120s 返回，result 合法，不卡死（探测错误不阻断，保底 prompt_only）。
     """
     llm = _load_config(DOUBAO_CONFIG_PATH)
     config = _build_probe_config(llm, provider="volcengine", thinking={"type": "disabled"})
@@ -388,7 +388,7 @@ async def test_unreachable_gateway_probe_not_hang():
     """场景 10：不可达网关（错误 apiBase）→ probe 快速失败降级，不卡死。
 
     模拟推理模型超时/网关挂起场景：用真实 apiKey + 错误 apiBase（连接挂起或快速拒绝）。
-    期望：≤120s 返回 probe_failed（infra_error 或 rate_limited），不卡死。
+    期望：≤120s 返回 supported + prompt_only（探测错误不阻断保存），不卡死。
     """
     config = {
         "apiKey": "22046eb7-4c69-41ea-8a72-6004785a4b2e",
@@ -410,7 +410,7 @@ async def test_unreachable_gateway_probe_not_hang():
 async def test_invalid_apikey_probe_not_hang():
     """场景 11：无效 apiKey → probe 快速失败（AuthenticationError → infra_error），不卡死。
 
-    验证 401 错误被正确分类为 infra_error，快速返回 probe_failed。
+    验证 401 错误被正确分类为 infra_error，快速降级 prompt_only（不阻断保存）。
     """
     llm = _load_config(DOUBAO_CONFIG_PATH)
     config = _build_probe_config(llm, provider="", thinking={"type": "disabled"})

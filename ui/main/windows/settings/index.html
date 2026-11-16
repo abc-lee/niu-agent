@@ -1337,7 +1337,10 @@
           };
           const probeResult = await window.electronAPI.probeResponseFormat(probeConfig);
 
-          // probe_failed（限流/超时/基础设施错误）：不写文件，提示重试。
+          // probe_failed 仅剩两类：配置本身无法构造（缺 apikey/apibase/model、
+          // 读配置失败），或 IPC/HTTP 传输失败（响应解析失败/超时/连接错误）。
+          // 后端探测期的限流/超时/基础设施/参数冲突一律返回 supported +
+          // prompt_only 保底，不再阻断保存。
           // Why（用户核心原则）：测试失败不写文件，测试成功才写。失败时写文件会
           // 产生缺 response_format_mode 的不完整配置，知识图谱运行时拿不到
           // Response 格式档位。不自动关窗，让用户决定重试或放弃。

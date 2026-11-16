@@ -1146,12 +1146,18 @@ async def probe_response_format(request: Request) -> dict:
       * RateLimitError → "rate_limited"（限流，sleep 重试不计失败）
       * litellm.Timeout / asyncio.TimeoutError → "timeout"（超时，sleep 重试不计失败）
       * AuthenticationError / APIConnectionError / 5xx → "infra_error"
-        （基础设施错误，端点早返 probe_failed 不写配置）
+        （基础设施错误，该档失败降级，不阻断保存）
       * BadRequestError / UnsupportedParamsError → "param_conflict"
-        （错误文案含 combination/reasoning_effort——参数组合无效，端点早返
-        probe_failed 报"参数组合无效"阻断，不降级不保存）或 "model_rejected"
-        （模型/网关明确拒绝，该档失败降级）
+        （错误文案含 combination/reasoning_effort——参数组合无效）或
+        "model_rejected"（模型/网关明确拒绝）——两者都只是该档失败降级
       * 其他异常 → "model_rejected"
+
+    新不变量（2026-11-16）：连通性已由 /api/test-llm 证明，因此 response_format
+    探测的任何错误（限流/超时/基础设施/参数冲突/模型拒绝/网关静默忽略）都不得
+    阻断保存：Tier 1 / Tier 2 不通过即继续降级，最终一律返回
+    result="supported" + mode="prompt_only"。只有"配置本身无法构造"
+    （body 读取失败、缺 apikey/apibase/model、get_llm_config 异常）仍返回
+    probe_failed——那是配置错误，不是探测错误。
 
     Why 三次采样：2026-07-21 实测豆包 Coding Plan 网关行为非确定性（flaky），
     同一请求 5 次采样 2 次 schema 胜、3 次 prompt 胜。单次探测碰巧命中执行
@@ -1165,13 +1171,17 @@ async def probe_response_format(request: Request) -> dict:
     5s→10s，最多 2 次整档共享，累计最多等 15s），直到返回非限流/非超时结果
     才判定该次采样。
 
-    Why 基础设施错误单独分类：AuthenticationError（401）/ APIConnectionError
-    （网络断）/ InternalServerError（500）/ ServiceUnavailableError（503）
-    是临时性基础设施故障，不是"模型不支持 response_format"。如果归入
-    model_rejected，两档失败 → prompt_only 写入配置 →
-    _should_auto_probe_after_upgrade 永远 False → 首次升级启动时恰好
-    API Key 失效/网关 500 的用户被永久静默降级，且永不重探。基础设施错误
-    应该端点早返 probe_failed，不写配置，用户稍后手动重试。
+    Why 提示词/基础设施错误不再早返：旧实现把 infra_error / param_conflict /
+    rate_limited 当作 probe_failed 早返，实测 thinkingmachines/inkling-2-small:free
+    对 json_schema 请求回 MissingMessageHeaderError（被 litellm 包成
+    APIConnectionError 子类 MidStreamFallbackError）→ 判 infra_error → 连接
+    测试已通过却保存失败。既然 /api/test-llm 已证明连通性，这类"探测期"错误
+    只说明该档不可用，继续降级即可。
+
+    prompt_only 是运行时最保守档位（等价于"未探测"/未配置 response_format_mode
+    时的行为：只靠提示词要求 JSON，不向 provider 发 response_format），因此
+    保底写入 prompt_only 不会比"没探测过"更差，无需用户手动重试，也不会把
+    用户锁进更弱的路径而无法自愈——下次保存/探测会重新尝试升档。
 
     真实环境验证（2026-07-21）：
     - 豆包 Coding Plan：网关行为非确定性（flaky），同一请求 5 次采样 2 次
@@ -1268,10 +1278,9 @@ async def probe_response_format(request: Request) -> dict:
         - 抛 RateLimitError → "rate_limited"（限流，不计失败，上层重试）
         - 抛 litellm.Timeout / openai.APITimeoutError → "timeout"（超时，不计失败，上层重试）
         - 抛 AuthenticationError / APIConnectionError / InternalServerError /
-          ServiceUnavailableError → "infra_error"（基础设施错误，不写配置，端点早返 probe_failed）
+          ServiceUnavailableError → "infra_error"（该档失败，上层继续降级）
         - 抛 BadRequestError / UnsupportedParamsError → "param_conflict"（错误文案含
-          combination / reasoning_effort——参数组合无效（如推理深度档位与思考链状态不兼容），
-          端点 probe_failed 阻断报"参数组合无效"，不降级不保存）
+          combination / reasoning_effort——参数组合无效（如推理深度档位与思考链状态不兼容））
           或 "model_rejected"（其余 4xx 拒绝，该档失败降级）
         - 抛其他异常 → "model_rejected"（统一视为不支持，reason 记录供诊断）
 
@@ -1287,13 +1296,12 @@ async def probe_response_format(request: Request) -> dict:
         如果不捕获，litellm.Timeout 会被 generic except Exception 归类
         model_rejected → 失败即停，慢但真支持的厂商被误杀。
 
-        Why 基础设施错误单独分类：AuthenticationError（401）/ APIConnectionError
-        （网络断）/ InternalServerError（500）/ ServiceUnavailableError（503）
-        是临时性基础设施故障，不是"模型不支持 response_format"。如果归入
-        model_rejected，两档失败 → prompt_only 写入配置 →
-        _should_auto_probe_after_upgrade 永远 False → 首次升级启动时恰好
-        API Key 失效/网关 500 的用户被永久静默降级，且永不重探。基础设施错误
-        应该端点早返 probe_failed，不写配置，用户稍后手动重试。
+        Why 基础设施错误不再早返：旧实现让 infra_error 直接返回 probe_failed，
+        理由是"临时性基础设施故障不该写 prompt_only"。但前端保存流程已先过
+        /api/test-llm 连通性测试，探测期再出现的 401/网络断/5xx 只说明该档
+        这次没跑通，不是"模型不支持 response_format"。任何探测错误都不阻断保存，
+        继续降级；Tier 3 保底 prompt_only（运行时最保守档位，与未探测一致，
+        下次保存会重新尝试升档）。
         """
         import litellm
         import openai
@@ -1365,32 +1373,9 @@ async def probe_response_format(request: Request) -> dict:
         _build_probe_response_format_json_schema(),
     )
 
-    if tier1_result == "rate_limited":
-        return {
-            "result": "probe_failed",
-            "reason": "探测限流/超时重试 2 次仍未成功，请稍后手动重试",
-            "mode": None,
-            "raw_response": "",
-        }
-
-    if tier1_result == "infra_error":
-        return {
-            "result": "probe_failed",
-            "reason": "探测遇到基础设施错误（API Key 失效/网络断/网关 5xx），请检查配置后手动重试",
-            "mode": None,
-            "raw_response": "",
-        }
-
-    # 参数组合 400（错误文案含 combination/reasoning_effort）→ 阻断报错，不降级不保存
-    # （testAndSave lightrag 段组合测试：组合错误报真实错误，用户调整档位后重试）
-    if tier1_result == "param_conflict":
-        return {
-            "result": "probe_failed",
-            "reason": f"参数组合无效（模型拒绝）：{tier1_raw[:150]}。请调整思考链/推理深度档位（跟随模型默认或更低档位）后重试",
-            "mode": None,
-            "raw_response": "",
-        }
-
+    # Tier 1 不通过（rate_limited / timeout / infra_error / param_conflict /
+    # gateway_blocked / model_rejected）一律继续降级，不阻断保存：
+    # 连通性已由 /api/test-llm 证明，探测错误只说明该档不可用。
     if tier1_result == "supported":
         return {
             "result": "supported",
@@ -1408,31 +1393,7 @@ async def probe_response_format(request: Request) -> dict:
         _build_probe_response_format_json_object(),
     )
 
-    if tier2_result == "rate_limited":
-        return {
-            "result": "probe_failed",
-            "reason": "探测限流/超时重试 2 次仍未成功，请稍后手动重试",
-            "mode": None,
-            "raw_response": "",
-        }
-
-    if tier2_result == "infra_error":
-        return {
-            "result": "probe_failed",
-            "reason": "探测遇到基础设施错误（API Key 失效/网络断/网关 5xx），请检查配置后手动重试",
-            "mode": None,
-            "raw_response": "",
-        }
-
-    # 参数组合 400（同 tier1）：阻断报错，不降级不保存
-    if tier2_result == "param_conflict":
-        return {
-            "result": "probe_failed",
-            "reason": f"参数组合无效（模型拒绝）：{tier2_raw[:150]}。请调整思考链/推理深度档位（跟随模型默认或更低档位）后重试",
-            "mode": None,
-            "raw_response": "",
-        }
-
+    # Tier 2 同样降级到底（任何错误都不阻断保存）
     if tier2_result == "supported":
         return {
             "result": "supported",
@@ -1441,11 +1402,15 @@ async def probe_response_format(request: Request) -> dict:
             "raw_response": "",
         }
 
-    # Tier 3: 都失败，prompt_only 保底
+    # Tier 3: 都失败，prompt_only 保底。
+    # 这是运行时最保守档位（等价于未探测/未配置 response_format_mode：只靠
+    # 提示词要求 JSON，不向 provider 发 response_format）。无论 Tier 1/2 是
+    # 限流、超时、基础设施、参数冲突还是模型拒绝，一律 supported + prompt_only，
+    # 绝不阻断保存。
     return {
         "result": "supported",
         "mode": "prompt_only",
-        "reason": f"Tier 1（{tier1_result}: {tier1_raw[:60] if tier1_raw else ''}）+ Tier 2（{tier2_result}: {tier2_raw[:60] if tier2_raw else ''}）均失败，降级到 prompt-only 模式",
+        "reason": f"Tier 1（{tier1_result}: {tier1_raw[:60] if tier1_raw else ''}）+ Tier 2（{tier2_result}: {tier2_raw[:60] if tier2_raw else ''}）均未通过，已按 prompt-only 保守档位保存",
         "raw_response": "",
     }
 

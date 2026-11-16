@@ -602,8 +602,8 @@ async def test_probe_tier_infra_error_returns_immediately():
 
 
 @pytest.mark.asyncio
-async def test_probe_returns_probe_failed_when_rate_limited():
-    """端点探测限流/超时重试耗尽 → 返回 probe_failed + rate_limited reason"""
+async def test_probe_falls_back_to_prompt_only_when_rate_limited():
+    """端点探测限流/超时耗尽 → 仍返回 supported + prompt_only（不阻断保存）"""
     from unittest.mock import AsyncMock, patch
 
     from fastapi import Request
@@ -627,14 +627,15 @@ async def test_probe_returns_probe_failed_when_rate_limited():
 
             result = await probe_response_format(mock_request)
 
-    assert result["result"] == "probe_failed"
-    assert "限流" in result["reason"]
-    assert result["mode"] is None
+    assert result["result"] == "supported"
+    assert result["mode"] == "prompt_only"
+    assert "prompt-only" in result["reason"]
+    assert "rate_limited" in result["reason"]
 
 
 @pytest.mark.asyncio
-async def test_probe_returns_probe_failed_when_infra_error():
-    """端点探测遇基础设施错误（401/网络断/500）→ 返回 probe_failed + infra_error reason，不写配置"""
+async def test_probe_falls_back_to_prompt_only_when_infra_error():
+    """端点探测遇基础设施错误（401/网络断/500）→ 仍返回 supported + prompt_only（不阻断保存）"""
     from unittest.mock import AsyncMock, patch
 
     from fastapi import Request
@@ -658,9 +659,10 @@ async def test_probe_returns_probe_failed_when_infra_error():
 
             result = await probe_response_format(mock_request)
 
-    assert result["result"] == "probe_failed"
-    assert "基础设施错误" in result["reason"]
-    assert result["mode"] is None
+    assert result["result"] == "supported"
+    assert result["mode"] == "prompt_only"
+    assert "prompt-only" in result["reason"]
+    assert "infra_error" in result["reason"]
 
 
 # ===== _try_tier 异常分类端点级测试 =====
@@ -701,9 +703,11 @@ async def test_try_tier_classifies_rate_limit_error():
             with patch("niu_api.compat._asyncio_sleep", new_callable=AsyncMock):
                 result = await probe_response_format(mock_request)
 
-    # 限流重试 2 次后返回 probe_failed（MAX_TRANSIENT_RETRIES=2）
-    assert result["result"] == "probe_failed"
-    assert "限流" in result["reason"]
+    # 限流重试 2 次后仍不通过 → 两档降级 → prompt_only（不阻断保存）
+    assert result["result"] == "supported"
+    assert result["mode"] == "prompt_only"
+    assert "prompt-only" in result["reason"]
+    assert "rate_limited" in result["reason"]
 
 
 @pytest.mark.asyncio
@@ -738,14 +742,18 @@ async def test_try_tier_classifies_litellm_timeout():
             with patch("niu_api.compat._asyncio_sleep", new_callable=AsyncMock):
                 result = await probe_response_format(mock_request)
 
-    # 超时重试 2 次后返回 probe_failed（MAX_TRANSIENT_RETRIES=2）
-    assert result["result"] == "probe_failed"
-    assert "限流" in result["reason"] or "超时" in result["reason"]
+    # 超时重试 2 次后仍不通过 → 两档降级 → prompt_only（不阻断保存）
+    # （_probe_tier_three_samples_async 耗尽 transient 重试后统一归一为 rate_limited，
+    #   raw 仍保留 Timeout 详情）
+    assert result["result"] == "supported"
+    assert result["mode"] == "prompt_only"
+    assert "prompt-only" in result["reason"]
+    assert "Timeout" in result["reason"]
 
 
 @pytest.mark.asyncio
 async def test_try_tier_classifies_authentication_error():
-    """_try_tier 捕获 AuthenticationError → infra_error → probe_failed 不写配置"""
+    """_try_tier 捕获 AuthenticationError → infra_error → 降级 prompt_only（不阻断保存）"""
     from unittest.mock import AsyncMock, MagicMock, patch
 
     from fastapi import Request
@@ -774,9 +782,11 @@ async def test_try_tier_classifies_authentication_error():
 
             result = await probe_response_format(mock_request)
 
-    # 基础设施错误立即返回 probe_failed（不重试）
-    assert result["result"] == "probe_failed"
-    assert "基础设施错误" in result["reason"]
+    # 基础设施错误不重试，两档降级 → prompt_only（不阻断保存）
+    assert result["result"] == "supported"
+    assert result["mode"] == "prompt_only"
+    assert "prompt-only" in result["reason"]
+    assert "infra_error" in result["reason"]
 
 
 @pytest.mark.asyncio
@@ -928,10 +938,10 @@ async def test_probe_max_tokens_follows_config(configured, expected):
 
 @pytest.mark.asyncio
 async def test_try_tier_classifies_param_conflict_combination():
-    """_try_tier 捕获 BadRequestError 文案含 combination → param_conflict → 端点 probe_failed 阻断。
+    """_try_tier 捕获 BadRequestError 文案含 combination → param_conflict → 降级 prompt_only。
 
-    参数组合 400（如 high + disabled）≠ response_format 不支持——必须报真实错误阻断
-    （不降级 prompt_only、不保存），用户调整思考链/推理深度档位后重试。
+    参数组合 400（如 high + disabled）只让该档失败，不阻断保存：连通性已由
+    /api/test-llm 证明，探测一律保底 prompt_only，用户可调整档位后再次保存升档。
     """
     from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -962,15 +972,13 @@ async def test_try_tier_classifies_param_conflict_combination():
 
             result = await probe_response_format(mock_request)
 
-    # param_conflict → probe_failed 阻断（不降级不保存）
-    assert result["result"] == "probe_failed"
-    assert result["mode"] is None
-    assert result["raw_response"] == ""
-    assert "参数组合无效" in result["reason"]
-    assert "请调整思考链/推理深度档位" in result["reason"]
+    # param_conflict → 两档降级 → prompt_only（不阻断保存）
+    assert result["result"] == "supported"
+    assert result["mode"] == "prompt_only"
+    assert "prompt-only" in result["reason"]
+    assert "param_conflict" in result["reason"]
     # 原始错误透传（含类名），方便用户诊断
     assert "BadRequestError" in result["reason"]
-    assert "high + disabled" in result["reason"]
 
 
 @pytest.mark.asyncio
@@ -1008,10 +1016,11 @@ async def test_try_tier_classifies_param_conflict_reasoning_effort_keyword():
 
             result = await probe_response_format(mock_request)
 
-    # reasoning_effort 关键字 → param_conflict → probe_failed 阻断
-    assert result["result"] == "probe_failed"
-    assert result["mode"] is None
-    assert "参数组合无效" in result["reason"]
+    # reasoning_effort 关键字 → param_conflict → 降级 prompt_only（不阻断保存）
+    assert result["result"] == "supported"
+    assert result["mode"] == "prompt_only"
+    assert "prompt-only" in result["reason"]
+    assert "param_conflict" in result["reason"]
 
 
 # ===== _probe_llm max_tokens 透传测试 =====
