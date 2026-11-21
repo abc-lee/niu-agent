@@ -238,6 +238,42 @@ class TestTriggerCallbackBackgroundScript:
         assert result == "ok"
         assert deleted == ["bg1"]  # one-time 报错永久删除（scheduler 成功路径也会删，幂等）
 
+    def test_code_run_receives_script_path_not_source(self, tmp_path, monkeypatch):
+        """直接执行脚本文件：code_run 收到 script_path/timeout=60/cwd，且不读源码"""
+        from pathlib import Path
+
+        from niu_api.internal.scheduler import service
+
+        scripts_dir = tmp_path / "scripts"
+        scripts_dir.mkdir()
+        script = scripts_dir / "clean.py"
+        script.write_text("print('x')\n", encoding="utf-8")
+
+        monkeypatch.setattr(service, "get_db_path", lambda: str(tmp_path / "scheduled_tasks.db"))
+
+        captured = {}
+        monkeypatch.setattr(service, "code_run", lambda *a, **kw: captured.update(kw) or {"status": "success", "stdout": "", "exit_code": 0})
+
+        read_text_paths = []
+        real_read_text = Path.read_text
+
+        def _recording_read_text(self, *args, **kwargs):
+            read_text_paths.append(self)
+            return real_read_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", _recording_read_text)
+
+        result = service.trigger_callback(self._make_bg_task())
+
+        assert result == "(silent)"
+        # cwd/script_path 必须是 str（传 Path 会让 code_run 的 isabs/join 语义与日志变形）
+        assert captured["script_path"] == str(script)
+        assert isinstance(captured["script_path"], str)
+        assert captured["timeout"] == 60
+        assert captured["cwd"] == str(scripts_dir)
+        assert "code" not in captured  # 不再把源码读进内存传入
+        assert read_text_paths == []  # 未调用 read_text
+
     def test_missing_script_file_returns_none_no_enqueue(self, tmp_path, monkeypatch):
         """脚本文件不存在 → 永久删除任务 + 返回 None，不调 code_run/enqueue"""
         from niu_api.chat_queue import EnqueueResult

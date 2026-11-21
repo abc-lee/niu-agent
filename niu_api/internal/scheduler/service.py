@@ -75,7 +75,8 @@ def trigger_callback(task: dict) -> str | None:
       （循环任务失败计数器 3 次标 failed；一次性任务标 failed 由 retry_failed_tasks
       5 分钟后重置）
 
-    background_script 任务：读 {workspace}/scripts/{script_file} → code_run →
+    background_script 任务：直接执行 {workspace}/scripts/{script_file}（不读源码写临时
+    文件，__file__/sys.path[0] 为真实路径）→ code_run →
     stdout 空+成功=静默返回 '(silent)'；有 stdout 或 status=error=stdout 注入主 Agent。
     脚本文件不存在=永久删除任务（避免无限重试）。
 
@@ -348,10 +349,16 @@ def _trigger_background_script(task: dict, main_loop, add_alert_fn) -> str | Non
             logger.error(f"[BG_SCRIPT] 删除任务失败: {e}")
         return None
 
-    code = script_path.read_text(encoding="utf-8")
     logger.info(f"[BG_SCRIPT] 执行 {script_file} (cwd={scripts_dir})")
 
-    result = code_run(code=code, code_type="python", timeout=60, cwd=str(scripts_dir))
+    # 直接执行脚本文件（不读源码写临时文件）：__file__/sys.path[0] 为真实路径，
+    # 同目录 import 可用，也不受临时目录清理影响。
+    result = code_run(
+        code_type="python",
+        timeout=60,
+        cwd=str(scripts_dir),
+        script_path=str(script_path),
+    )
 
     # 取 stdout（进程启动失败时 dict 无 stdout 键）
     if result.get("status") == "error" and "stdout" not in result:

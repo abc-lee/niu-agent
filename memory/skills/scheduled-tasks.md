@@ -81,7 +81,8 @@ last_tested: 2026-09-01
 - **`print()` 输出 = 通知主 Agent（含 IM）**；不 print 且退出码 0 = 静默。用 `print()` 精确控制是否通知。
 - **异常 / 非零退出 / 超时 = 报错通知**：报错文本（含 traceback，stderr 合并进 stdout）会随通知发给主 Agent。recurring 任务连续 3 次失败标 failed；one-time 任务报错会永久删除任务（避免无限重试，修复脚本后需重建任务）；脚本文件丢失也会永久删除任务。
 - **stdout 注入主 Agent 时截断 2000 字符**，长输出请自行截断或写文件后 print 文件路径。
-- **cwd = `{workspace}/scripts/`**，脚本可用相对路径读写同目录文件（如 `open('data.json')`）。但 **不能直接 `import` 同目录其他 .py 文件**——code_run 把代码写到临时文件执行，`sys.path[0]` 是临时目录而非 cwd。多文件脚本需用 `exec(open('helper.py').read())` 或合并成单文件。
+- **cwd = `{workspace}/scripts/`**，脚本可用相对路径读写同目录文件（如 `open('data.json')`）。执行器**直接执行脚本文件**，`sys.path[0]` 就是 scripts 目录，**同目录 `import helper` 已可用**（注意同名遮蔽：目录内不要放与标准库/三方/项目模块同名的 `.py`）。`exec` / 合并单文件只适用于主 Agent 内联 `code_run`（它仍走临时文件、`sys.path[0]` 是临时目录而非 scripts 目录，同目录 import 不可用），配方用**绝对路径** `exec(open('/绝对路径/helper.py').read())`（内联 `code_run` 的 cwd 不是 scripts 目录，相对路径不成立）。
+- **持久状态文件（基线、游标、上次结果等）路径一律用 `os.path.expanduser("~/.niu/...")` 写死，不要基于 `__file__` / `SCRIPT_DIR` 拼路径**：background_script 虽然是直接执行脚本文件（`__file__` 是真实路径），但主 Agent 用 `code_run` 内联调试代码时 `__file__` 仍是临时路径，原样拷进定时脚本就会把状态写进系统临时目录、被清理后丢失（2026-11-21 HF 监控脚本踩中：基线写在临时目录，清理后误报"首次基线报告"）。相对路径 `open('data.json')` 可用（cwd 是 scripts 目录），但跨天持久状态请用上面的绝对路径。
 - **超时 60 秒**（code_run 默认），超时进程被杀、stdout 追加 `[Timeout Error]` 后作为报错通知。长任务请拆分。
 - **运行环境**：项目自带的 Python 解释器与已装依赖（numpy/opencv/requests 等均可直接 import）。
 - **创建脚本后务必手动运行验证一次**，确认输出符合预期——静默失败风险高：脚本逻辑 bug（如解析错误）导致输出为空时，调度器会认为"无事静默"，问题长期不暴露。
@@ -134,8 +135,8 @@ else:
 ## What happens on trigger（background_script）
 
 调度器到点触发时：
-1. 读取 `{workspace}/scripts/{script_file}`
-2. 用 `code_run` 执行（cwd=scripts 目录，超时 60s）
+1. 直接执行 `{workspace}/scripts/{script_file}` 这个文件（`__file__`、`sys.path[0]` 就是真实路径与 scripts 目录）
+2. 由 `code_run` 直接运行该脚本（cwd=scripts 目录，超时 60s，不建临时文件）
 3. 判定输出：
    - **无输出** → 静默，你（主 Agent）无感知
    - **有输出** → 你会收到一条 `[定时任务]` 开头的消息，内容是脚本的 stdout。按内容正常处理即可（如整理邮件、报告异常等）。这条消息同时触发前端提醒与 IM 推送。

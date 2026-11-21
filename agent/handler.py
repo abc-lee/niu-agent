@@ -380,15 +380,43 @@ def _ps_command_body(code: str) -> str:
     return _PS_UTF8_PREFIX + code
 
 
-def code_run(code: str, code_type: str = "python", timeout: int = 60, cwd: str = None) -> dict:
-    """执行代码"""
-    preview = (code[:60].replace("\n", " ") + "...") if len(code) > 60 else code.strip()
+def code_run(code: str | None = None, code_type: str = "python", timeout: int = 60,
+             cwd: str = None, script_path: str | None = None) -> dict:
+    """执行代码
+
+    两种模式（互斥，必须且只能给一个）：
+    - 内联模式 `code`：代码写入临时文件后交给解释器执行——`__file__` / `sys.argv[0]`
+      指向临时路径、`sys.path[0]` 是临时目录。
+    - 脚本模式 `script_path`：直接执行磁盘上的 `.py` 文件（不建临时文件）——`__file__`
+      / `sys.argv[0]` 为真实脚本路径、`sys.path[0]` 是脚本所在目录，同目录 import 可用。
+      仅支持 `code_type="python"`；相对路径按 `cwd` 解析（`cwd` 缺省为系统临时目录）。
+    """
+    if code is not None and script_path is not None:
+        return {"status": "error", "msg": "code 与 script_path 互斥"}
+    if code is None and script_path is None:
+        return {"status": "error", "msg": "必须提供 code 或 script_path"}
+
+    abs_path = None
+    if script_path is not None:
+        if code_type != "python":
+            return {"status": "error", "msg": "script_path 仅支持 python"}
+        abs_path = script_path if os.path.isabs(script_path) else os.path.abspath(
+            os.path.join(cwd or tempfile.gettempdir(), script_path)
+        )
+        if not os.path.isfile(abs_path):
+            return {"status": "error", "msg": f"脚本不存在: {abs_path}"}
+
+    preview_src = code if code is not None else script_path
+    preview = (preview_src[:60].replace("\n", " ") + "...") if len(preview_src) > 60 else preview_src.strip()
     print(f"[Action] Running {code_type}: {preview}", file=sys.stderr, flush=True)
 
     cwd = cwd or tempfile.gettempdir()
     tmp_path = None
 
-    if code_type == "python":
+    if abs_path is not None:
+        # 脚本模式：直接执行文件，__file__/sys.path[0] 均为真实路径，不建临时文件
+        cmd = [sys.executable, "-X", "utf8", "-u", abs_path]
+    elif code_type == "python":
         tmp_file = tempfile.NamedTemporaryFile(
             suffix=".ai.py", delete=False, mode="w", encoding="utf-8"
         )

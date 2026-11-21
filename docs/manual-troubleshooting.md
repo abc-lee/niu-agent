@@ -459,8 +459,8 @@ background_script 是后台静默脚本任务（到点执行 Python 脚本，无
 - 查日志 `[BG_SCRIPT]` 看执行详情
 
 **脚本 import 同目录模块失败：**
-- code_run 把代码写到临时文件执行，`sys.path[0]` 是临时目录而非 cwd。脚本内 `import helper`（helper.py 在 scripts 目录）会 ModuleNotFoundError
-- 解决：用 `exec(open('helper.py').read())` 或合并成单文件（cwd 是 scripts 目录，相对路径读写文件正常）
+- **`background_script` 定时任务**：执行器**直接执行脚本文件**（不建临时文件），`sys.path[0]` 就是 `{workspace}/scripts` 目录，脚本内 `import helper`（helper.py 在 scripts 目录）**可用**。仍报 ModuleNotFoundError 先查同名遮蔽——目录内若有与标准库/三方/项目模块同名的 `.py`（如 `json.py`），会被 `sys.path[0]` 优先命中
+- **主 Agent 内联 `code_run`（传 `code` 字符串）**：仍走临时文件执行，`sys.path[0]` 指向临时目录（非 scripts 目录），同目录 import 仍不可用。变通：用**绝对路径** `exec(open('/绝对路径/helper.py').read())`（内联 `code_run` 的 cwd 不是 scripts 目录，相对路径不成立）或合并成单文件
 
 **数据库直查：**
 ```bash

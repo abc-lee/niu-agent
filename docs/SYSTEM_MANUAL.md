@@ -473,6 +473,10 @@ sleep 由闲置 5 分钟触发，投递全局整理队列单 worker 串行执行
 
 journal 已移出睡眠管道（见下节）。entity → dream 的顺序依赖保持不变：先入库再精加工，防实体碎片化。文件驱动梦境链（F1/F2/F3 三文件中继，位于 `~/.niu/md/`）机制不变：F1 为 DB 镜像只增不减、F2 无限队列（只放完整对话轮）、F3 按模型上下文窗口的 40%（token）切分重建；组装器的指针块归档同样只动派生数据不触三文件。
 
+#### background_script 类定时任务（执行语义）
+
+定时任务第二种类型（`task_kind='background_script'`）：到点由后台线程**直接执行** `{workspace}/scripts/{script_file}` 这个 Python 文件（`code_run(script_path=...)`），不再读源码写临时文件后执行。因此脚本内 `__file__`（及 `sys.argv[0]`）就是真实脚本路径，`sys.path[0]` 是脚本所在目录——同目录 `import helper` 可用；注意同名遮蔽：`sys.path[0]` 优先于标准库/三方/项目模块（目录内不要放 `json.py` 之类同名文件）。cwd 仍是 `{workspace}/scripts/`（脚本内相对路径读写不变）；直接执行 `__main__` 脚本不生成 `.pyc`。超时固定 60 秒，超时杀进程树、stdout 追加 `[Timeout Error]` 作为报错通知；stdout 注入主 Agent 时截断 2000 字符；无输出 + 退出码 0 即静默（返回 `"(silent)"` 走成功路径），有输出或报错才通知。**持久状态必须用绝对路径**（如 `os.path.expanduser("~/.niu/...")`）：主 Agent 用 `code_run` 内联执行代码时 `__file__` 仍是临时路径，绝对路径写法不依赖执行方式、也不受临时目录清理影响。
+
 #### subagent 类定时任务（第三种类型：子 Agent 静默执行）
 
 定时任务三种类型中的第三种（`task_kind='subagent'`）：到点由后台线程静默调起指定子 Agent 执行 `content` 任务文本。**默认全程静默**——结果仅落执行日志、零打扰；严禁经 ChatQueue enqueue（治理输出写进 messages.db 会反污染上下文窗口）。创建必须传 `agent_name`（`config/agents/` 或 `~/.niu/agents/` 下须存在同名 md，创建时校验）；未知 task_kind / subagent 缺 agent_name 显式拒绝，不落 reminder 兜底。

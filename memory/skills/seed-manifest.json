@@ -50,10 +50,11 @@
       ]
     },
     "scheduled-tasks.md": {
-      "version": 2,
-      "hash": "a76e467478d201df",
+      "version": 3,
+      "hash": "662169b46b1d3be4",
       "history": [
-        "1cc4ec66f20c4934"
+        "1cc4ec66f20c4934",
+        "a76e467478d201df"
       ]
     }
   }
